@@ -49,7 +49,7 @@ Things I'd like to add (no promises on when):
 - Full-screen multiplayer screens drawn with the game's own art (already in the works, press F7 to try them, the option is called "Full-screen F8 screens (work in progress)")
 - Results screen and round banners in the game's style
 - Restyled leaderboard cards
-- A Multiplayer entry in the main menu
+- A Multiplayer entry in the main menu (edit: if that's even possible lol)
 - Rejoining a round that's already playing after a short disconnect (might add this next release since that happens a lot)
 - Room list scrolling for busy servers
 - Session scoreboard (round wins over the evening), 3-2-1 countdown
