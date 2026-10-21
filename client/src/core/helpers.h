@@ -1,0 +1,117 @@
+// From DivaModLoader: https://github.com/blueskythlikesclouds/DivaModLoader/blob/master/Dependencies/Helpers.h
+//
+// MIT License
+//
+// Copyright (c) 2022 Skyth
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+// the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+// THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+// TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#pragma once
+#include <windows.h>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#define _CONCAT2(x, y) x##y
+#define CONCAT2(x, y) _CONCAT2(x, y)
+#define INSERT_PADDING(length) \
+    uint8_t CONCAT2(pad, __LINE__)[length]
+
+#define ASSERT_OFFSETOF(type, field, offset) \
+    static_assert(offsetof(type, field) == offset, "offsetof assertion failed")
+
+#define ASSERT_SIZEOF(type, size) \
+    static_assert(sizeof(type) == size, "sizeof assertion failed")
+
+#ifdef BASE_ADDRESS
+const HMODULE MODULE_HANDLE = GetModuleHandle(nullptr);
+
+#define ASLR(address) \
+    ((size_t)MODULE_HANDLE + (size_t)address - (size_t)BASE_ADDRESS)
+#endif
+
+#define FUNCTION_PTR(returnType, callingConvention, function, location, ...) \
+    returnType (callingConvention *function)(__VA_ARGS__) = (returnType(callingConvention*)(__VA_ARGS__))(location)
+
+#define PROC_ADDRESS(libraryName, procName) \
+    GetProcAddress(LoadLibrary(TEXT(libraryName)), procName)
+
+#define HOOK(returnType, callingConvention, functionName, location, ...) \
+    typedef returnType callingConvention _##functionName(__VA_ARGS__); \
+    _##functionName* original##functionName = (_##functionName*)(location); \
+    returnType callingConvention implOf##functionName(__VA_ARGS__)
+
+#define INSTALL_HOOK(functionName) \
+    { \
+        DetourTransactionBegin(); \
+        DetourUpdateThread(GetCurrentThread()); \
+        DetourAttach((void**)&original##functionName, implOf##functionName); \
+        DetourTransactionCommit(); \
+    }
+
+#define VTABLE_HOOK(returnType, callingConvention, className, functionName, ...) \
+    typedef returnType callingConvention className##functionName(className* This, __VA_ARGS__); \
+    className##functionName* original##className##functionName; \
+    returnType callingConvention implOf##className##functionName(className* This, __VA_ARGS__)
+
+#define INSTALL_VTABLE_HOOK(className, object, functionName, functionIndex) \
+    { \
+        void** addr = &(*(void***)object)[functionIndex]; \
+        if (*addr != implOf##className##functionName) \
+        { \
+            original##className##functionName = (className##functionName*)*addr; \
+            DWORD oldProtect; \
+            VirtualProtect(addr, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect); \
+            *addr = implOf##className##functionName; \
+            VirtualProtect(addr, sizeof(void*), oldProtect, &oldProtect); \
+        } \
+    }
+
+#define WRITE_MEMORY(location, type, ...) \
+    { \
+        const type data[] = { __VA_ARGS__ }; \
+        DWORD oldProtect; \
+        VirtualProtect((void*)(location), sizeof(data), PAGE_EXECUTE_READWRITE, &oldProtect); \
+        memcpy((void*)(location), data, sizeof(data)); \
+        VirtualProtect((void*)(location), sizeof(data), oldProtect, &oldProtect); \
+    }
+
+#define WRITE_JUMP(location, function) \
+    { \
+        WRITE_MEMORY(location, uint8_t, 0xE9); \
+        WRITE_MEMORY(location + 1, uint32_t, (uint32_t)(function) - (size_t)(location) - 5); \
+    }
+    
+#define WRITE_CALL(location, function) \
+    { \
+        WRITE_MEMORY(location, uint8_t, 0xE8); \
+        WRITE_MEMORY(location + 1, uint32_t, (uint32_t)(function) - (size_t)(location) - 5); \
+    }
+
+#define WRITE_NOP(location, count) \
+    { \
+        DWORD oldProtect; \
+        VirtualProtect((void*)(location), (size_t)(count), PAGE_EXECUTE_READWRITE, &oldProtect); \
+        for (size_t i = 0; i < (size_t)(count); i++) \
+            *((uint8_t*)(location) + i) = 0x90; \
+        VirtualProtect((void*)(location), (size_t)(count), oldProtect, &oldProtect); \
+    }
+
+// ActualMandM
+inline uint32_t ReadUnalignedU32(void* memory)
+{
+    uint8_t* p = (uint8_t*)memory;
+    return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
+}

@@ -1,0 +1,78 @@
+# MultiDiva protocol (v1)
+
+WebSocket at `ws://<host>:3939/ws`, one JSON text message per frame:
+
+```json
+{ "type": "chat", "data": { "text": "hi" } }
+```
+
+Times are milliseconds. Unknown message types are ignored, so either side can add types later.
+
+## Round start in practice
+
+The host starts a song in their own game as usual. Their client captures the complete launch block
+(song, chart, performers, outfits) at launch and sends it as `start` data. Everyone else auto-starts
+on the `start` broadcast; the host's client ignores it because it is already playing.
+
+Every player's game (host included) then holds on NOW LOADING once the song is loaded and sends
+`loaded`. When all players in the round have loaded, the server sends `go` and everyone starts at
+the same moment. Players who leave or quit while loading don't block the others, and after 30 s
+the server sends `go` anyway.
+
+## Room lifecycle
+
+```
+lobby --(host start, everyone ready, song picked)--> playing --(everyone finished/left)--> lobby
+```
+
+- The first player in a room is the host. If the host leaves, the player who joined next becomes host.
+- A new pick clears everyone's ready flag.
+- While `playing`, players who join wait in the lobby state until the round ends.
+
+## Client -> server
+
+| type | data | notes |
+|---|---|---|
+| `hello` | `{name, version, steam?, avatar?}` | first message; server answers `welcome`. `steam`: Steam ID (decimal) for the Steam avatar. `avatar`: base64 PNG/JPEG (max 32 KB, 256x256) for players without one |
+| `join` | `{room}` | joins or creates the room (name 1-32 chars) |
+| `leave` | `{}` | back to no room |
+| `chat` | `{text}` | max 300 chars |
+| `ready` | `{ready}` | lobby only |
+| `hover` | `{pv, title}` | host only, lobby only: the song highlighted in song select (`-1` = none) and its title |
+| `have` | `{pv, ok}` | whether this player has song `pv` (the room's `focus`); players without it sit the round out |
+| `host` | `{id}` | host only: makes that player the host |
+| `kick` | `{id}` | host only: removes that player (they get `kicked`; not a ban, they may join again). Counts as leaving during a round |
+| `pick` | `{block, pv, difficulty, edition, title}` | host only, lobby only. `block` = base64 of the 276-byte launch block. Optional preview, clears ready flags |
+| `start` | `{}` or pick data | host only. Needs a pick (or pick data in this message) and every player ready (host counts as ready). Sending pick data here does not clear ready flags |
+| `title` | `{title}` | host only: the current pick's song title, sent once the host's game shows it |
+| `loaded` | `{}` | this player's song finished loading and is held on NOW LOADING |
+| `score` | `{score, combo, completion, cool, fine, safe, sad, worst}` | while playing, ~10 Hz. Live values |
+| `finish` | `{result}` | song over. `result` = same fields as `score` plus `grade`, `maxCombo`, `failed` (bool) |
+
+## Server -> client
+
+| type | data | notes |
+|---|---|---|
+| `welcome` | `{id, version}` | your player id |
+| `room` | room state, see below | sent on every change |
+| `chat` | `{from, name, text, system}` | `system` = server notices (joins, host changes) |
+| `start` | `{block, pv, difficulty, edition, title}` | auto-start now |
+| `go` | `{}` | everyone in the round has loaded (or the 30 s load timeout passed): release the hold and play |
+| `scores` | `{players: [{id, name, score, combo, completion, finished}]}` | ~10 Hz while playing, sorted by score |
+| `results` | `{players: [{id, name, result, place}]}` | end of round, sorted by score |
+| `kicked` | `{room}` | the host removed you; you are in no room now |
+| `rooms` | `{rooms: [{name, host, players, playing}]}` | the open rooms, sent to players connected but in no room (after `welcome`, after leaving or a kick) and again ~150 ms after any room change; sorted by name |
+| `error` | `{message}` | refused request, connection stays open (e.g. a room is full: 8 players max) |
+| `ping` | `{}` | keepalive every 10 s; clients drop the connection after 30 s of silence |
+
+Room state:
+
+```json
+{
+  "name": "miku", "state": "lobby", "host": 1,
+  "pick": { "pv": 54, "difficulty": 3, "edition": 0, "title": "Roshin Yukai" },
+  "players": [ { "id": 1, "name": "Lemm", "ready": true, "playing": false, "loaded": false } ]
+}
+```
+
+`pick` is `null` until the host picks. `playing` = in the current round. `hover` / `hoverTitle`: the host's highlighted song (`-1` = none). `focus`: the song players report on with `have` (the hovered one in the lobby, else the pick); players who reported not having it carry `missing: true`. Names are unique per room (case-insensitive): a repeat is shown as `Name (2)`, `Name (3)`. Players may also carry `steam` (Steam ID) and `avatar: true` (custom avatar at `GET /avatar/<id>`, same host as `/ws`).

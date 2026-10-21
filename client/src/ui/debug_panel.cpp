@@ -1,0 +1,363 @@
+#include "debug_panel.h"
+#include "multiplayer_ui.h"
+#include "gpu_capture.h"
+#include "game_sprites.h"
+#include "../core/config.h"
+#include "../core/log.h"
+#include "../game/launch.h"
+#include "../game/memscan.h"
+#include "../game/pause_guard.h"
+#include "../game/session.h"
+#include "../game/sigs.h"
+#include "../game/songs.h"
+#include "../game/sync_start.h"
+#include "../game/watch.h"
+
+#include <cstdarg>
+#include <windows.h>
+#include <imgui.h>
+
+namespace md::ui {
+
+static const ImVec4 Bad(1.0f, 0.4f, 0.4f, 1.0f);
+static const ImVec4 Dim(0.6f, 0.6f, 0.6f, 1.0f);
+
+static void Row(const char* label, uintptr_t address, bool ok, const char* fmt, ...)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted(label);
+    ImGui::TableSetColumnIndex(1);
+    if (address)
+        ImGui::TextColored(Dim, "%llX", (unsigned long long)address);
+    ImGui::TableSetColumnIndex(2);
+    if (!ok) {
+        ImGui::TextColored(Bad, "read failed");
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    ImGui::TextV(fmt, args);
+    va_end(args);
+}
+
+static bool BeginValueTable(const char* id)
+{
+    if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV))
+        return false;
+    ImGui::TableSetupColumn("Field", ImGuiTableColumnFlags_WidthFixed, 150);
+    ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 90);
+    ImGui::TableSetupColumn("Value");
+    ImGui::TableHeadersRow();
+    return true;
+}
+
+static void DrawSignatures()
+{
+    ImGui::Text("%d/%d signatures resolved", sigs::ResolvedCount(), (int)sigs::Count);
+    for (int i = 0; i < sigs::Count; i++) {
+        const sigs::Result& r = sigs::Get((sigs::Id)i);
+        if (!r.address)
+            ImGui::TextColored(Bad, "  %-18s not found (hook disabled)", r.name);
+        else if ((uintptr_t)r.address != r.known103)
+            ImGui::TextColored(Bad, "  %-18s %p (expected %llX)", r.name, r.address, (unsigned long long)r.known103);
+        else
+            ImGui::Text("  %-18s %p", r.name, r.address);
+    }
+}
+
+static void DrawLive(const Session& s)
+{
+    const GameState& g = s.state;
+    ImGui::Text("State: %s%s   hook pvId=%d", s.inSong ? "in song" : "menu", s.practice ? " (practice)" : "", s.pvId);
+
+    if (BeginValueTable("live")) {
+        Row("Live score", addr::LiveScore, g.liveOk, "%d", g.liveScore);
+        Row("Live combo", addr::LiveCombo, g.liveOk, "%d", g.liveCombo);
+        Row("Completion", addr::Completion, g.completionOk, "%.2f %%", g.completion);
+        Row("PV id", addr::PvId, g.pvOk, "%d", g.pvId);
+        Row("Difficulty (vanilla)", addr::PvDiffVanilla, g.pvOk, "%d  %s", g.diffVanilla, ToString((Difficulty)g.diffVanilla));
+        Row("Difficulty (SLP)", addr::PvDiffSongLimitPatch, g.pvOk, "%d  %s", g.diffSongLimitPatch, ToString((Difficulty)g.diffSongLimitPatch));
+        Row("Grade", addr::PvGrade, g.gradeOk, "%d  %s", g.grade, ToString((FinalGrade)g.grade));
+        Row("Worst counter", addr::WorstCounter, g.worstOk, "%u", g.worstCounter);
+        Row("Title (guess)", addr::PvTitle, true, "%s", g.titleGuess[0] ? g.titleGuess : "(not a std::string?)");
+        ImGui::EndTable();
+    }
+
+    ImGui::TextColored(Dim, "Title raw:");
+    for (int i = 0; i < 32; i++) {
+        if (i % 16)
+            ImGui::SameLine(0, 4);
+        ImGui::TextColored(Dim, "%02X", g.titleRaw[i]);
+    }
+}
+
+static void DrawResult(const GameState& g)
+{
+    const DivaScore& d = g.score;
+    if (!BeginValueTable("result"))
+        return;
+    Row("Total score", addr::MainScore, g.scoreOk, "%u", d.totalScore);
+    Row("Combo", addr::MainScore + offsetof(DivaScore, combo), g.scoreOk, "%u", d.combo);
+    Row("Cool / Fine", addr::MainScore + offsetof(DivaScore, cool), g.scoreOk, "%u / %u", d.cool, d.fine);
+    Row("Safe / Sad / Worst", addr::MainScore + offsetof(DivaScore, safe), g.scoreOk, "%u / %u / %u", d.safe, d.sad, d.worst);
+    Row("Pre-adjust C/F/S/S/W", addr::MainScore + offsetof(DivaScore, preAdjustCool), g.scoreOk, "%u / %u / %u / %u / %u",
+        d.preAdjustCool, d.preAdjustFine, d.preAdjustSafe, d.preAdjustSad, d.preAdjustWorst);
+    for (int i = 0; i < 8; i++)
+        Row(i == 0 ? "Unknown[0..7]" : "", addr::MainScore + offsetof(DivaScore, unknown) + i * 4, g.scoreOk, "%u", d.unknown[i]);
+    ImGui::EndTable();
+}
+
+static void DrawGrades(const Session& s)
+{
+    ImGui::Text("Last delta: %d   last grade: %s", s.grades.LastDelta(), s.hasLastGrade ? ToString(s.lastGrade) : "-");
+    for (int i = 0; i < (int)NoteGrade::Count; i++) {
+        if (i)
+            ImGui::SameLine(0, 16);
+        ImGui::Text("%s: %u", ToString((NoteGrade)i), s.grades.Count((NoteGrade)i));
+    }
+}
+
+static void DrawEvents(const Session& s)
+{
+    DWORD now = GetTickCount();
+    if (s.recentEvents.empty())
+        ImGui::TextColored(Dim, "No hook events yet. Start a song.");
+    for (const GameEvent& e : s.recentEvents) {
+        if (e.type == GameEventType::SongStarted)
+            ImGui::Text("%6.1fs ago  %s pvId=%d", (now - e.tick) / 1000.0f, ToString(e.type), e.pvId);
+        else if (e.type == GameEventType::PvGameInit)
+            ImGui::Text("%6.1fs ago  %s stage=%d pv=%d %s ed=%d%s", (now - e.tick) / 1000.0f, ToString(e.type),
+                e.stageIndex, e.pvId, ToString((Difficulty)e.difficulty), e.edition, e.overridden ? "  OVERRIDDEN" : "");
+        else
+            ImGui::Text("%6.1fs ago  %s", (now - e.tick) / 1000.0f, ToString(e.type));
+    }
+}
+
+static void DrawStage(const Session& s)
+{
+    int32_t m[12] = {};
+    if (SafeRead(addr::ModeState, m))
+        ImGui::TextColored(Dim, "Mode state: %d %d %d %d | %d %d %d %d | %d %d %d %d", m[0], m[1], m[2], m[3], m[4], m[5],
+            m[6], m[7], m[8], m[9], m[10], m[11]);
+
+    const StageState& st = s.stage;
+    if (!st.ok) {
+        ImGui::TextColored(Bad, "stage data read failed (%llX)", (unsigned long long)addr::StageData);
+        return;
+    }
+    ImGui::Text("Current stage index: %d", st.index);
+    if (!ImGui::BeginTable("stage", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV))
+        return;
+    ImGui::TableSetupColumn("Entry");
+    ImGui::TableSetupColumn("PV id");
+    ImGui::TableSetupColumn("Difficulty");
+    ImGui::TableSetupColumn("Edition");
+    ImGui::TableHeadersRow();
+    for (int i = 0; i < stage::EntryCount; i++) {
+        const StageEntry& e = st.entries[i];
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text(i == st.index ? "%d  <" : "%d", i);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::Text("%d", e.pvId);
+        ImGui::TableSetColumnIndex(2);
+        ImGui::Text("%d  %s", e.difficulty, ToString((Difficulty)e.difficulty));
+        ImGui::TableSetColumnIndex(3);
+        ImGui::Text("%d", e.edition);
+    }
+    ImGui::EndTable();
+}
+
+static void DrawModules(const launch::Block& b)
+{
+    ImGui::TextColored(Dim, "  modules: %d %d %d %d %d %d", b.Module(0), b.Module(1), b.Module(2), b.Module(3),
+        b.Module(4), b.Module(5));
+}
+
+static void DrawLaunchOverride()
+{
+    static const ImVec4 Armed(0.4f, 1.0f, 0.4f, 1.0f);
+    static const char* names[] = { "Easy", "Normal", "Hard", "Extreme", "ExExtreme" };
+
+    ImGui::TextWrapped("Arm a launch, then pick ANY song in song select and start it. "
+                       "The game launches the armed one instead.");
+
+    launch::Request armed;
+    if (launch::IsArmed(&armed)) {
+        ImGui::TextColored(Armed, "ARMED (%s): pv %d, %s, edition %d", armed.fullBlock ? "full block" : "song only",
+            armed.block.PvId(), ToString((Difficulty)armed.block.Difficulty()), armed.block.Edition());
+        if (armed.fullBlock)
+            DrawModules(armed.block);
+        if (ImGui::Button("Disarm"))
+            launch::Disarm();
+        return;
+    }
+
+    // What a host would send: the whole block of their last launch, outfits included.
+    launch::Block last;
+    if (launch::LastLaunch(last)) {
+        ImGui::Text("Last launch: pv %d, %s, edition %d", last.PvId(), ToString((Difficulty)last.Difficulty()), last.Edition());
+        DrawModules(last);
+        if (ImGui::Button("Arm last launch (as a client would)")) {
+            launch::Arm({ last, true });
+            Log("launch override armed: full block of last launch, pv=%d diff=%d", last.PvId(), last.Difficulty());
+        }
+
+        // Auto-start: what a client does when the host starts the round.
+        bool inSelect = launch::InSongSelect();
+        if (!inSelect)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("Start last launch NOW")) {
+            bool ok = launch::StartNow(last);
+            Log("auto-start pv=%d diff=%d: %s", last.PvId(), last.Difficulty(), ok ? "requested" : "refused");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("...with MY outfits (test)")) {
+            bool ok = launch::StartNow(last, true);
+            Log("auto-start (own outfits) pv=%d diff=%d: %s", last.PvId(), last.Difficulty(), ok ? "requested" : "refused");
+        }
+        if (!inSelect) {
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::TextColored(Dim, "(only in song select)");
+        }
+    } else {
+        ImGui::TextColored(Dim, "Start a song once to capture a launch block.");
+    }
+    if (ImGui::Button("Play start sound"))
+        launch::PlayStartSound();
+
+    int32_t hovered = songs::Hovered();
+    if (hovered >= 0) {
+        ImGui::Text("Highlighted song: pv %d (%s)", hovered, songs::Has(hovered) ? "installed" : "NOT installed");
+        if (GetConfig().research) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Dump song entry (research)"))
+                songs::DumpEntryStrings(hovered);
+        }
+    }
+    ImGui::TextColored(Dim, "Song check: pv 9999 is %s (should be not installed)", songs::Has(9999) ? "installed" : "not installed");
+
+    // F8 as the full-screen screens instead of the window (work in progress).
+    bool screens = !ui::ClassicLobby();
+    if (ImGui::Checkbox("Full-screen F8 screens (work in progress)", &screens))
+        ui::SetClassicLobby(!screens);
+
+    // Reverse-engineering tools, only with "research=1" in multidiva.ini (some freeze the game for a while).
+    // Which game code writes the performer outfits into the launch slot, and other research.
+    if (!GetConfig().research) {
+    } else if (watch::Active()) {
+        ImGui::TextColored(Armed, "Watching outfit writes: %d hit(s) logged", watch::Hits());
+        if (ImGui::Button("Stop watching"))
+            watch::Stop();
+    } else {
+        if (ImGui::Button("Watch outfit writes (research)")) {
+            int32_t index = 0;
+            SafeRead(addr::StageData + stage::IndexOffset, index);
+            watch::Start(StageEntryAddress(index) + stage::Modules);
+        }
+        // Song select's per-performer outfit selection for the highlighted song (0x141750890 + 0x1C0).
+        if (ImGui::Button("Watch outfit selection (research)"))
+            watch::Start(0x141750A50, 40);
+        // Which textures and sprite rectangles the game draws this screen with (writes mods\MultiDiva\capture).
+        if (ImGui::Button(ui::capture::Busy() ? "Capturing..." : "Capture this screen's sprites (research)"))
+            ui::capture::Request();
+        // Is the main menu's sprite set file (names, rectangles, textures) kept in memory once loaded?
+        if (ImGui::Button("Find menu sprite set in memory (research)"))
+            memscan::FindMenuSpriteSet();
+        ImGui::SameLine();
+        if (ImGui::Button("List loaded sprite sets (instant)"))
+            memscan::ListSpriteSets();
+        // Where the game keeps its font's per-letter widths (for drawing our text in the game's font).
+        if (ImGui::Button("Find font map in memory (research)"))
+            memscan::FindFontMap();
+        // The game's own sprites drawn by us (ui/game_sprites.cpp).
+        bool test = ui::sprites::TestEnabled();
+        if (ImGui::Checkbox("Show game sprite test", &test)) {
+            ui::sprites::SetTest(test);
+            ui::sprites::LogStatus();
+        }
+        // The pause menu task's state (TaskPauseManagerSwitch + 0x70): who opens it on alt-tab.
+        if (ImGui::Button("Watch pause menu state (research)"))
+            watch::Start(0x14CC0CA90 + 0x70, 12);
+    }
+
+    ImGui::Separator();
+    static int pvId = 1;
+    static int difficulty = (int)Difficulty::Hard;
+    static bool extra = false;
+    ImGui::SetNextItemWidth(120);
+    ImGui::InputInt("PV id", &pvId);
+    ImGui::SetNextItemWidth(120);
+    ImGui::Combo("Difficulty", &difficulty, names, IM_ARRAYSIZE(names));
+    ImGui::Checkbox("Extra chart (edition 1)", &extra);
+    if (ImGui::Button("Arm song only (keeps selected outfits)")) {
+        launch::Request r{};
+        r.block.SetInt(stage::PvId, pvId);
+        r.block.SetInt(stage::Difficulty, difficulty);
+        r.block.SetInt(stage::Edition, extra ? 1 : 0);
+        r.fullBlock = false;
+        launch::Arm(r);
+        Log("launch override armed: song only, pv=%d diff=%d edition=%d", pvId, difficulty, extra ? 1 : 0);
+    }
+}
+
+static void DrawSyncStart()
+{
+    sync::PvGameState st = sync::ReadState();
+    if (st.exists)
+        ImGui::Text("pv_game: outer %d, inner %d", st.outer, st.inner);
+    else
+        ImGui::TextColored(Dim, "pv_game: none (not in a song)");
+
+    int step = sync::HoldStep();
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::InputInt("Hold at loading step (-1 = off)", &step))
+        sync::SetHoldStep(step < -1 ? -1 : step);
+
+    if (sync::IsHolding()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.3f, 1.0f), "HOLDING at step %d", sync::HoldStep());
+        if (ImGui::Button("Release"))
+            sync::Release();
+    }
+}
+
+void DrawDebugPanel(bool* open)
+{
+    ImGui::SetNextWindowSize(ImVec2(520, 640), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("MultiDiva2 debug (F7)", open)) {
+        ImGui::End();
+        return;
+    }
+
+    const Session& s = g_session;
+    if (ImGui::CollapsingHeader("Signatures", ImGuiTreeNodeFlags_DefaultOpen))
+        DrawSignatures();
+    if (ImGui::CollapsingHeader("Live state", ImGuiTreeNodeFlags_DefaultOpen))
+        DrawLive(s);
+    if (ImGui::CollapsingHeader("Note grades (inferred)", ImGuiTreeNodeFlags_DefaultOpen))
+        DrawGrades(s);
+    if (ImGui::CollapsingHeader("Result block (DivaScore)"))
+        DrawResult(s.state);
+    if (ImGui::CollapsingHeader("Stage data (song launch)", ImGuiTreeNodeFlags_DefaultOpen))
+        DrawStage(s);
+    if (ImGui::CollapsingHeader("Launch override", ImGuiTreeNodeFlags_DefaultOpen))
+        DrawLaunchOverride();
+    if (ImGui::CollapsingHeader("Sync start (experiment)", ImGuiTreeNodeFlags_DefaultOpen))
+        DrawSyncStart();
+    if (ImGui::CollapsingHeader("Pause guard", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool forced = pause::IsForced();
+        if (ImGui::Checkbox("Block pausing outside multiplayer too (test)", &forced))
+            pause::SetForced(forced);
+        pause::State ps = pause::GetState();
+        ImGui::TextColored(Dim, "paused: %s, hint: %d", ps.paused ? "yes" : "no", (int)ps.hint);
+    }
+    if (ImGui::CollapsingHeader("Hook events", ImGuiTreeNodeFlags_DefaultOpen))
+        DrawEvents(s);
+
+    ImGui::End();
+}
+
+} // namespace md::ui

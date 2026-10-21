@@ -1,0 +1,585 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"image"
+	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/coder/websocket"
+)
+
+type testClient struct {
+	t    *testing.T
+	conn *websocket.Conn
+	id   int
+}
+
+func startServer(t *testing.T) string {
+	hub := NewHub(20*time.Millisecond, 300*time.Millisecond)
+	srv := httptest.NewServer(httpHandler(hub))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+}
+
+func connect(t *testing.T, url, name string) *testClient {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.CloseNow() })
+	c := &testClient{t: t, conn: conn}
+	c.send("hello", HelloMsg{Name: name, Version: ProtocolVersion})
+	var w WelcomeMsg
+	c.expect("welcome", &w)
+	c.id = w.ID
+	return c
+}
+
+func (c *testClient) send(typ string, data any) {
+	c.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := c.conn.Write(ctx, websocket.MessageText, encode(typ, data)); err != nil {
+		c.t.Fatalf("write %s: %v", typ, err)
+	}
+}
+
+// expect reads until a message of type typ arrives (skipping others) and decodes it into out.
+func (c *testClient) expect(typ string, out any) {
+	c.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for {
+		_, data, err := c.conn.Read(ctx)
+		if err != nil {
+			c.t.Fatalf("waiting for %s: %v", typ, err)
+		}
+		var env Envelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			c.t.Fatalf("bad envelope: %v", err)
+		}
+		if env.Type == typ {
+			if out != nil {
+				if err := json.Unmarshal(env.Data, out); err != nil {
+					c.t.Fatalf("decode %s: %v", typ, err)
+				}
+			}
+			return
+		}
+	}
+}
+
+// expectRoom waits for a room update matching pred.
+func (c *testClient) expectRoom(pred func(RoomMsg) bool) RoomMsg {
+	c.t.Helper()
+	for {
+		var r RoomMsg
+		c.expect("room", &r)
+		if pred(r) {
+			return r
+		}
+	}
+}
+
+func (c *testClient) expectError(contains string) {
+	c.t.Helper()
+	var e ErrorMsg
+	c.expect("error", &e)
+	if !strings.Contains(e.Message, contains) {
+		c.t.Fatalf("error %q does not contain %q", e.Message, contains)
+	}
+}
+
+// joinInOrder makes host the room's host: separate connections race, so wait for each join.
+func joinInOrder(host, guest *testClient, room string) {
+	host.t.Helper()
+	host.send("join", JoinMsg{Room: room})
+	host.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	guest.send("join", JoinMsg{Room: room})
+	guest.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 })
+}
+
+func validPick(pv int) PickMsg {
+	return PickMsg{Block: base64.StdEncoding.EncodeToString(make([]byte, LaunchBlockSize)), PV: pv, Difficulty: 3, Title: "Roshin Yukai"}
+}
+
+func TestFullRound(t *testing.T) {
+	url := startServer(t)
+	host := connect(t, url, "Host")
+	guest := connect(t, url, "Guest")
+
+	host.send("join", JoinMsg{Room: "Miku"})
+	host.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 && r.Host == host.id })
+	guest.send("join", JoinMsg{Room: "miku"}) // room names are case-insensitive
+	guest.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 && r.Host == host.id })
+
+	// Chat reaches everyone, including the sender.
+	guest.send("chat", ChatMsg{Text: "  hello\x07 "})
+	var chat ChatOutMsg
+	for chat.From != guest.id {
+		host.expect("chat", &chat)
+	}
+	if chat.Text != "hello" || chat.Name != "Guest" {
+		t.Fatalf("chat = %+v", chat)
+	}
+
+	// Only the host picks; a pick clears ready flags.
+	guest.send("pick", validPick(1))
+	guest.expectError("only the host")
+	guest.send("ready", ReadyMsg{Ready: true})
+	host.expectRoom(func(r RoomMsg) bool { return r.Players[1].Ready })
+	host.send("pick", validPick(54))
+	r := host.expectRoom(func(r RoomMsg) bool { return r.Pick != nil })
+	if r.Pick.PV != 54 || r.Players[1].Ready {
+		t.Fatalf("after pick: %+v", r)
+	}
+
+	// Start needs everyone ready.
+	host.send("start", nil)
+	host.expectError("Guest is not ready")
+	guest.send("ready", ReadyMsg{Ready: true})
+	host.expectRoom(func(r RoomMsg) bool { return r.Players[1].Ready })
+	host.send("start", nil)
+
+	var start PickMsg
+	guest.expect("start", &start)
+	if start.PV != 54 || start.Block == "" {
+		t.Fatalf("start = %+v", start)
+	}
+	host.expect("start", nil)
+
+	// Live scores are broadcast sorted by score.
+	host.send("score", Score{Score: 1000, Combo: 10})
+	guest.send("score", Score{Score: 5000, Combo: 50})
+	for {
+		var s ScoresMsg
+		host.expect("scores", &s)
+		if len(s.Players) == 2 && s.Players[0].Score == 5000 {
+			if s.Players[0].ID != guest.id || s.Players[1].Score != 1000 {
+				t.Fatalf("scores = %+v", s)
+			}
+			break
+		}
+	}
+
+	// Round ends when everyone finished.
+	host.send("finish", FinishMsg{Result: Result{Score: Score{Score: 400000}, Grade: 4}})
+	guest.send("finish", FinishMsg{Result: Result{Score: Score{Score: 380000}, Grade: 3}})
+	var res ResultsMsg
+	guest.expect("results", &res)
+	if len(res.Players) != 2 || res.Players[0].ID != host.id || res.Players[0].Place != 1 || res.Players[1].Result.Grade != 3 {
+		t.Fatalf("results = %+v", res)
+	}
+	guest.expectRoom(func(r RoomMsg) bool { return r.State == StateLobby && !r.Players[0].Playing })
+}
+
+func TestHostLeavesMidRound(t *testing.T) {
+	url := startServer(t)
+	host := connect(t, url, "Host")
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+
+	// The pick clears ready flags, so ready up only after it arrived.
+	host.send("pick", validPick(54))
+	guest.expectRoom(func(r RoomMsg) bool { return r.Pick != nil })
+	guest.send("ready", ReadyMsg{Ready: true})
+	host.expectRoom(func(r RoomMsg) bool { return r.Players[1].Ready })
+	host.send("start", nil)
+	guest.expect("start", nil)
+
+	host.conn.Close(websocket.StatusNormalClosure, "")
+	r := guest.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	if r.Host != guest.id {
+		t.Fatalf("host not handed over: %+v", r)
+	}
+
+	// The remaining player finishing ends the round with only their result.
+	guest.send("finish", FinishMsg{Result: Result{Score: Score{Score: 1}}})
+	var res ResultsMsg
+	guest.expect("results", &res)
+	if len(res.Players) != 1 || res.Players[0].ID != guest.id {
+		t.Fatalf("results = %+v", res)
+	}
+}
+
+// The host's game started a song: the start message carries the launch block, no separate pick.
+func TestStartWithBlock(t *testing.T) {
+	url := startServer(t)
+	host := connect(t, url, "Host")
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+	guest.send("ready", ReadyMsg{Ready: true})
+	host.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 && r.Players[1].Ready })
+
+	host.send("start", validPick(728))
+	var start PickMsg
+	guest.expect("start", &start)
+	if start.PV != 728 {
+		t.Fatalf("start = %+v", start)
+	}
+	r := guest.expectRoom(func(r RoomMsg) bool { return r.State == StatePlaying })
+	if r.Pick == nil || r.Pick.PV != 728 {
+		t.Fatalf("room = %+v", r)
+	}
+}
+
+func startedRound(t *testing.T) (host, guest *testClient) {
+	url := startServer(t)
+	host = connect(t, url, "Host")
+	guest = connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+	guest.send("ready", ReadyMsg{Ready: true})
+	host.expectRoom(func(r RoomMsg) bool { return r.Players[1].Ready })
+	host.send("start", validPick(54))
+	guest.expect("start", nil)
+	host.expect("start", nil)
+	return host, guest
+}
+
+// expectNoneBeforeMarker sends a chat marker and fails if a `forbidden` message arrives before
+// the marker comes back. (A read deadline would close the connection, so no timeouts here.)
+func (c *testClient) expectNoneBeforeMarker(forbidden string) {
+	c.t.Helper()
+	c.send("chat", ChatMsg{Text: "marker"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for {
+		_, data, err := c.conn.Read(ctx)
+		if err != nil {
+			c.t.Fatalf("waiting for marker: %v", err)
+		}
+		var env Envelope
+		if json.Unmarshal(data, &env) != nil {
+			continue
+		}
+		if env.Type == forbidden {
+			c.t.Fatalf("unexpected %s", forbidden)
+		}
+		var chat ChatOutMsg
+		if env.Type == "chat" && json.Unmarshal(env.Data, &chat) == nil && chat.Text == "marker" {
+			return
+		}
+	}
+}
+
+func TestLoadingBarrier(t *testing.T) {
+	host, guest := startedRound(t)
+
+	host.send("loaded", nil)
+	guest.expectRoom(func(r RoomMsg) bool { return r.Players[0].Loaded && !r.Players[1].Loaded })
+	guest.expectNoneBeforeMarker("go")
+
+	guest.send("loaded", nil)
+	host.expect("go", nil)
+	guest.expect("go", nil)
+}
+
+func TestLoadingTimeout(t *testing.T) {
+	host, guest := startedRound(t)
+	host.send("loaded", nil)
+	// The guest never loads: the server starts without them after the (test) timeout.
+	host.expect("go", nil)
+	guest.expect("go", nil)
+}
+
+func TestLoadingPlayerLeaves(t *testing.T) {
+	host, guest := startedRound(t)
+	host.send("loaded", nil)
+	guest.conn.Close(websocket.StatusNormalClosure, "")
+	host.expect("go", nil)
+}
+
+func TestValidation(t *testing.T) {
+	url := startServer(t)
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	raw := &testClient{t: t, conn: conn}
+	raw.send("join", JoinMsg{Room: "x"})
+	raw.expectError("hello first")
+	raw.send("hello", HelloMsg{Name: "Old", Version: 0})
+	raw.expectError("version mismatch")
+
+	c := connect(t, url, "A")
+	c.send("chat", ChatMsg{Text: "hi"})
+	c.expectError("not in a room")
+	c.send("join", JoinMsg{Room: "x"})
+	c.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	bad := validPick(1)
+	bad.Block = base64.StdEncoding.EncodeToString([]byte("short"))
+	c.send("pick", bad)
+	c.expectError("invalid launch block")
+	c.send("start", nil)
+	c.expectError("pick a song first")
+}
+
+func TestTitleUpdate(t *testing.T) {
+	host, guest := startedRound(t)
+	guest.send("title", TitleMsg{Title: "Hijack"}) // ignored: not the host
+	host.send("title", TitleMsg{Title: "Freely Tomorrow"})
+	r := guest.expectRoom(func(r RoomMsg) bool { return r.Pick != nil && r.Pick.Title != "Roshin Yukai" })
+	if r.Pick.Title != "Freely Tomorrow" {
+		t.Fatalf("title = %q (only the host may set it)", r.Pick.Title)
+	}
+}
+
+func TestSteamIDRelayed(t *testing.T) {
+	url := startServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	c := &testClient{t: t, conn: conn}
+	c.send("hello", HelloMsg{Name: "A", Version: ProtocolVersion, Steam: "76561198000000000"})
+	c.expect("welcome", nil)
+	c.send("join", JoinMsg{Room: "s"})
+	r := c.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	if r.Players[0].Steam != "76561198000000000" {
+		t.Fatalf("steam = %q", r.Players[0].Steam)
+	}
+
+	bad := connect(t, url, "B") // no Steam ID, and junk would be dropped
+	bad.send("join", JoinMsg{Room: "s"})
+	r = bad.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 })
+	if r.Players[1].Steam != "" {
+		t.Fatalf("steam = %q", r.Players[1].Steam)
+	}
+}
+
+func TestAvatarServed(t *testing.T) {
+	url := startServer(t)
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	c := &testClient{t: t, conn: conn}
+	c.send("hello", HelloMsg{Name: "Bot", Version: ProtocolVersion, Avatar: b64})
+	var w WelcomeMsg
+	c.expect("welcome", &w)
+	c.send("join", JoinMsg{Room: "a"})
+	r := c.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	if !r.Players[0].Avatar {
+		t.Fatal("avatar flag not set")
+	}
+
+	base := "http" + strings.TrimSuffix(strings.TrimPrefix(url, "ws"), "/ws")
+	resp, err := http.Get(base + "/avatar/" + strconv.Itoa(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" || !bytes.Equal(got, buf.Bytes()) {
+		t.Fatalf("GET avatar: %d %q, %d bytes", resp.StatusCode, resp.Header.Get("Content-Type"), len(got))
+	}
+	if resp, err := http.Get(base + "/avatar/999"); err != nil || resp.StatusCode != 404 {
+		t.Fatalf("unknown id should 404")
+	}
+
+	// Junk and oversized images are dropped.
+	big := image.NewRGBA(image.Rect(0, 0, MaxAvatarSide+1, 4))
+	buf.Reset()
+	png.Encode(&buf, big)
+	for _, bad := range []string{"bm90IGFuIGltYWdl", base64.StdEncoding.EncodeToString(buf.Bytes())} {
+		if _, ok := parseAvatar(bad); ok {
+			t.Fatalf("accepted bad avatar %.20q", bad)
+		}
+	}
+}
+
+func TestRepeatedNamesNumbered(t *testing.T) {
+	url := startServer(t)
+	long := strings.Repeat("あ", MaxNameLen)
+	names := []string{"初音ミク", "初音ミク", "初音ミク", "MIKU", "miku", long, long}
+	want := []string{"初音ミク", "初音ミク (2)", "初音ミク (3)", "MIKU", "miku (2)", long, strings.Repeat("あ", MaxNameLen-4) + " (2)"}
+	var last RoomMsg
+	for i, n := range names {
+		c := connect(t, url, n)
+		c.send("join", JoinMsg{Room: "dupes"})
+		last = c.expectRoom(func(r RoomMsg) bool { return len(r.Players) == i+1 })
+	}
+	for i, p := range last.Players {
+		if p.Name != want[i] {
+			t.Errorf("player %d: name %q, want %q", i, p.Name, want[i])
+		}
+		if utf8.RuneCountInString(p.Name) > MaxNameLen {
+			t.Errorf("player %d: %q longer than %d", i, p.Name, MaxNameLen)
+		}
+	}
+
+	// The number belongs to the room: in another room the player has their own name again.
+	c := connect(t, url, "初音ミク")
+	c.send("join", JoinMsg{Room: "dupes"})
+	c.expectRoom(func(r RoomMsg) bool { return len(r.Players) == len(names)+1 })
+	c.send("join", JoinMsg{Room: "elsewhere"})
+	r := c.expectRoom(func(r RoomMsg) bool { return r.Name == "elsewhere" })
+	if r.Players[0].Name != "初音ミク" {
+		t.Fatalf("in a new room: %q", r.Players[0].Name)
+	}
+}
+
+func TestGiveHostAndKick(t *testing.T) {
+	url := startServer(t)
+	a := connect(t, url, "A")
+	b := connect(t, url, "B")
+	joinInOrder(a, b, "k")
+
+	// Only the host may hand over host or kick.
+	b.send("host", PlayerRefMsg{ID: b.id})
+	b.expectError("only the host")
+	b.send("kick", PlayerRefMsg{ID: a.id})
+	b.expectError("only the host")
+	a.send("kick", PlayerRefMsg{ID: 999})
+	a.expectError("no such player")
+
+	a.send("host", PlayerRefMsg{ID: b.id})
+	a.expectRoom(func(r RoomMsg) bool { return r.Host == b.id })
+
+	// B is the host now and kicks A, who is told and leaves the room.
+	b.send("kick", PlayerRefMsg{ID: a.id})
+	var k KickedMsg
+	a.expect("kicked", &k)
+	if k.Room != "k" {
+		t.Fatalf("kicked from %q", k.Room)
+	}
+	b.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 && r.Players[0].ID == b.id })
+	a.send("chat", ChatMsg{Text: "still here?"})
+	a.expectError("not in a room")
+
+	// A kick is not a ban.
+	a.send("join", JoinMsg{Room: "k"})
+	a.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 })
+}
+
+func TestMissingSong(t *testing.T) {
+	url := startServer(t)
+	host := connect(t, url, "Host")
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "m")
+
+	// The host's highlight becomes the focus; only the host's counts.
+	guest.send("hover", HoverMsg{PV: 7})
+	host.send("hover", HoverMsg{PV: 54, Title: "Roshin Yukai"})
+	r := host.expectRoom(func(r RoomMsg) bool { return r.Hover == 54 })
+	if r.Focus != 54 || r.HoverTitle != "Roshin Yukai" {
+		t.Fatalf("focus = %d, title %q", r.Focus, r.HoverTitle)
+	}
+
+	// The guest doesn't have it: flagged, and the round starts without them (no ready needed).
+	guest.send("have", HaveMsg{PV: 54, OK: false})
+	host.expectRoom(func(r RoomMsg) bool { return r.Players[1].Missing })
+	host.send("pick", validPick(54))
+	host.send("start", nil)
+	host.expect("start", nil)
+	r = host.expectRoom(func(r RoomMsg) bool { return r.State == StatePlaying })
+	if !r.Players[0].Playing || r.Players[1].Playing || r.Hover != -1 {
+		t.Fatalf("round players: %+v", r)
+	}
+	host.send("loaded", struct{}{})
+	host.expect("go", nil)
+	host.send("finish", FinishMsg{Result: Result{Score: Score{Score: 100}}})
+	var res ResultsMsg
+	host.expect("results", &res)
+	if len(res.Players) != 1 || res.Players[0].ID != host.id {
+		t.Fatalf("results: %+v", res)
+	}
+
+	// Next round the guest is ready but only finds out while loading: dropped, nobody waits for them.
+	guest.send("have", HaveMsg{PV: 54, OK: true})
+	guest.send("ready", ReadyMsg{Ready: true})
+	host.expectRoom(func(r RoomMsg) bool { return r.State == StateLobby && r.Players[1].Ready })
+	host.send("start", nil)
+	host.expect("start", nil)
+	guest.send("have", HaveMsg{PV: 54, OK: false})
+	host.expectRoom(func(r RoomMsg) bool { return r.State == StatePlaying && !r.Players[1].Playing })
+	host.send("loaded", struct{}{})
+	host.expect("go", nil)
+}
+
+// expectRooms waits for a room list matching pred.
+func (c *testClient) expectRooms(pred func(RoomsMsg) bool) RoomsMsg {
+	c.t.Helper()
+	for {
+		var r RoomsMsg
+		c.expect("rooms", &r)
+		if pred(r) {
+			return r
+		}
+	}
+}
+
+func TestRoomList(t *testing.T) {
+	url := startServer(t)
+	a := connect(t, url, "A")
+	a.expectRooms(func(r RoomsMsg) bool { return len(r.Rooms) == 0 })
+
+	// B opens a room: A, still in the lobby, sees it with its host and size.
+	b := connect(t, url, "B")
+	b.send("join", JoinMsg{Room: "Miku"})
+	got := a.expectRooms(func(r RoomsMsg) bool { return len(r.Rooms) == 1 })
+	if room := got.Rooms[0]; room.Name != "Miku" || room.Host != "B" || room.Players != 1 || room.Playing {
+		t.Fatalf("room list entry %+v", room)
+	}
+
+	// A joins: the list stops (A is in a room). C, in the lobby, sees two players.
+	a.send("join", JoinMsg{Room: "miku"})
+	a.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 })
+	c := connect(t, url, "C")
+	c.expectRooms(func(r RoomsMsg) bool { return len(r.Rooms) == 1 && r.Rooms[0].Players == 2 })
+
+	// Everyone leaves: the room closes and C's list empties.
+	a.send("leave", nil)
+	b.send("leave", nil)
+	c.expectRooms(func(r RoomsMsg) bool { return len(r.Rooms) == 0 })
+	// A is back in the lobby and gets the list again.
+	a.expectRooms(func(r RoomsMsg) bool { return len(r.Rooms) == 0 })
+}
+
+func TestRoomFull(t *testing.T) {
+	url := startServer(t)
+	var players []*testClient
+	for i := 0; i < MaxPlayers; i++ {
+		p := connect(t, url, "P")
+		p.send("join", JoinMsg{Room: "full"})
+		p.expectRoom(func(r RoomMsg) bool { return len(r.Players) == i+1 })
+		players = append(players, p)
+	}
+	late := connect(t, url, "Late")
+	late.send("join", JoinMsg{Room: "full"})
+	late.expectError("is full")
+	late.send("chat", ChatMsg{Text: "am i in?"})
+	late.expectError("not in a room")
+	// A seat frees up: now it works.
+	players[0].send("leave", nil)
+	late.send("join", JoinMsg{Room: "full"})
+	late.expectRoom(func(r RoomMsg) bool { return len(r.Players) == MaxPlayers })
+}

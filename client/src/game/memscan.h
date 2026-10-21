@@ -1,0 +1,21 @@
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Research tool: searches the game's readable memory for a byte pattern (e.g. to find loaded sprite sets).
+namespace md::memscan {
+
+// Every address where `pattern` occurs, up to `max` hits. Slow (scans all committed memory): research only.
+std::vector<uintptr_t> Find(const void* pattern, size_t size, size_t max = 32);
+
+// F7 research button: looks for the main menu sprite set (spr_nswgam_menu.bin) and logs what it finds.
+void FindMenuSpriteSet();
+
+// F7 research button: lists the game's loaded sprite sets from its sprite set map (instant, no scan).
+void ListSpriteSets();
+
+// F7 research button: looks for the game's parsed font glyph tables (fontmap.bin) and who holds them.
+void FindFontMap();
+
+} // namespace md::memscan

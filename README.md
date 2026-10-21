@@ -1,0 +1,99 @@
+# MultiDiva2
+
+Online multiplayer for **Hatsune Miku: Project DIVA Mega Mix+** (Steam), in the spirit of osu! multiplayer lobbies.
+
+Join a room with friends, the host picks a song, and it starts for everyone at the same moment, with each player's own outfits. You get a live leaderboard while you play and shared results at the end.
+
+> Work in progress. It works and you can play with it, but expect some rough edges.
+
+## Features
+
+- Rooms with chat, a host, and a ready check
+- The host plays any song in song select and it starts for everyone in the room, all at the same moment
+- A live leaderboard during the song (it can be hidden), and shared results afterwards
+- Everyone plays with their own outfits, or with the host's
+- Warns when someone in the room doesn't have the song the host is looking at (custom song packs for example)
+- The host can hand over host or kick players (right-click a player)
+- Steam profile pictures
+- Pausing is blocked during a multiplayer round (press Esc twice to pause anyway), and alt-tab doesn't pause either
+- **Host a server** in one click: runs a small server on your PC with a free Cloudflare tunnel, so friends can join from anywhere without router setup
+- Miku Bot, a practice opponent for testing alone (if u dont have friends lol)
+- **Coming next (probably the next release):** multiplayer through Steam directly, so you can join and invite friends from Steam instead of sharing an address
+
+## How to Install
+
+1. Install [Diva Mod Manager](https://github.com/TekkaGB/DivaModManager) (it sets up DivaModLoader for you).
+2. Drag the MultiDiva2 zip from the [releases](../../releases) onto Diva Mod Manager, make sure MultiDiva2 is ticked, and
+   launch the game.
+
+## Play
+
+| Key | |
+|---|---|
+| F7 | extra options (work-in-progress screens) |
+| F8 | MultiDiva2 window: connect, host, room, chat |
+| F9 | hide everything MultiDiva2 shows |
+
+- **Joining:** paste the address your friend sends you (`wss://...`) into *Server* and click *Connect*.
+- **Hosting:** click *Host a server* and send your friends the invite address (*Copy invite*).
+- Everyone clicks *Ready* and waits on the song select screen. The host starts any song and it starts for everyone.
+  Pick songs everyone owns (same DLC, same song mods).
+
+More on hosting, including a permanent address of your own: [docs/hosting.md](docs/hosting.md).
+
+## For later
+
+Things I'd like to add (no promises on when):
+
+- Song preview in the room: hear the song the host is looking at, like osu!
+- Full-screen multiplayer screens drawn with the game's own art (already in the works, press F7 to try them, the option is called "Full-screen F8 screens (work in progress)")
+- Results screen and round banners in the game's style
+- Restyled leaderboard cards
+- A Multiplayer entry in the main menu
+- Rejoining a round that's already playing after a short disconnect (might add this next release since that happens a lot)
+- Room list scrolling for busy servers
+- Session scoreboard (round wins over the evening), 3-2-1 countdown
+- Team mode (2v2, summed scores, 2 players on the right, 2 on the left, maybe a tug-of-war with a crown just like osu!)
+- Song select search bar and F2 for a random song (other features for osu! players like me)
+
+## Building
+
+- Client (the mod DLL): Visual Studio 2022 with C++, then
+  `cmake --preset x64-release && cmake --build --preset x64-release`.
+  Set `DIVA_DIR` to the game folder to have it copied into `mods/MultiDiva`.
+- Server: [Go](https://go.dev), then `cd server && go build -o bin/multidiva-server.exe .` (tests: `go test ./...`).
+
+Protocol: [docs/protocol.md](docs/protocol.md). Game internals the mod relies on: [docs/re-notes.md](docs/re-notes.md).
+
+## Credits
+
+- **[MultiDiva](https://github.com/zvandermeer/MultiDiva)** by Zoey VanderMeer (zvandermeer), a 2022 proof of concept
+  for multiplayer in Mega Mix+. This project started from it and kept its name, but the code is written from scratch.
+- [DivaModLoader](https://github.com/blueskythlikesclouds/DivaModLoader) by Skyth, which the mod runs on.
+  `client/src/core/helpers.h` is its helper header (MIT licence, notice in the file).
+- File formats and game structures were figured out with the help of public research projects:
+  [MikuMikuLibrary](https://github.com/blueskythlikesclouds/MikuMikuLibrary) and
+  [ReDIVA](https://github.com/korenkonder/ReDIVA). No code from them is included. Apart from the DivaModLoader
+  header above, there's no code from any other mod either.
+- Libraries: [Dear ImGui](https://github.com/ocornut/imgui), [Microsoft Detours](https://github.com/microsoft/Detours),
+  [nlohmann/json](https://github.com/nlohmann/json), [stb](https://github.com/nothings/stb),
+  [coder/websocket](https://github.com/coder/websocket), [cloudflared](https://github.com/cloudflare/cloudflared)
+  (downloaded when you host).
+- The mod ships no game files. Everything it shows from the game (sprites, fonts, jackets) is read from the running game.
+
+## About AI
+
+I want to be upfront about this: MultiDiva2 was made with a LOT of AI assistance. Most of the code was written by Claude. I rarely added code in this project, I mostly planned what to build and how it should look and feel, testing every feature in the game (often with my girlfriend or with the bot), and going back and forth until it worked the way I wanted.
+
+I'm an osu! player, and I made this so my girlfriend and I could play Project DIVA together the way osu! lobbies work.
+Finding the game's addresses and figuring out its file formats by hand would have taken me months of digging. I have immense respect for the modders who have been paving the way in this community for years, all the people who have been doing this work by hand before AI was ever a thing, and not just on Project Diva but any other game.
+
+And to be absolutely clear, I'm strictly against AI-generated art. Any creative expression that a human should be making has no business being outsourced to AI. But in my opinion there is a massive difference between generating slop and using AI strictly as a technical tool to accelerate the exhausting, time-consuming parts of reverse engineering.
+
+I don't copy other people's stuff, with AI or without. If you see something here that comes from your work without credit, tell me and I'll fix it.
+
+If you are strictly against any form of AI-assisted programming that's completely fair and I respect your stance, please feel free to steer clear of this mod. I made this out of love for the game and to play with my girlfriend. It’s here for anyone who wants to enjoy it. If it's not for you then no hard feelings, just skip it and don't harass me or anyone willing to use it.
+
+## Licence
+
+GPL-3.0. See [LICENCE](LICENCE). Bundled libraries keep their own licences.

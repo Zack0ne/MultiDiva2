@@ -1,0 +1,230 @@
+# Reverse-engineering notes (DivaMegaMix.exe v1.03)
+
+Build date 2022-10-28, ImageBase `0x140000000`, no ASLR. Section names are scrambled by the
+protector: real game code lives in the section named `.bss` (RVA `0x1000`-`0xB24A00`), and the huge
+`.code` section is the protector's virtualized code. Some game functions are thin `jmp`s into it
+and can't be read statically. `.pdata` (exception directory) is intact and gives function bounds.
+
+Reference: [ReDIVA](https://github.com/korenkonder/ReDIVA) is a decompilation of Arcade Future Tone,
+which MM+ is built on. Names below come from it.
+
+## Song launch
+
+| What | Address | Notes |
+|---|---|---|
+| `task_pv_game_open` | `0x1405DA0D0` | only xref to the `"PVGAME"` task name (`0x140CB9428`). `rcx` = args, `[rcx]` = pv_id |
+| `task_pv_game_init_pv` | `0x1404414B0` | reads the current stage entry, builds args, calls `task_pv_game_open`. Hooked as `PvGameInitPv`. Both callers are inside virtualized code |
+| stage data getter (`sub_14038BB30` in AFT) | `0x14040B2A0` | `lea rax, [0x1416E2B90]; ret` |
+| stage data (`struc_717`) | `0x1416E2B90` | see layout below |
+| stage count | `0x14040B440` | virtualized |
+
+Stage data layout (from `task_pv_game_init_pv`):
+
+- `+0x08` int32 current stage index (0..3, otherwise entry 2 is used)
+- `+0x30` 4 entries of `0x6A8` bytes (`struc_716`; AFT stride was `0x668`)
+- per entry: `+0x2C` pv_id, `+0x34` difficulty, `+0x38` edition, `+0x4C` clear % x100,
+  `+0x50` life gauge safety time, `+0x54` life gauge border, `+0x69` ex_stage,
+  `+0x78..` per-performer module ids (6 x int32), `+0xA8..` customize items
+- the verified grade (`0x1416E2D00`) and worst counter (`0x1416E2D40`) are `entry[0] + 0x140` / `+0x180`
+
+## Verified in-game (see `client/src/game/memory.h`)
+
+PV id `0x1412C2340` is a separate variable (not the stage entry). Result block, live score/combo,
+completion, grade, worst counter, vanilla difficulty and title are all confirmed against the HUD.
+
+## Tooling
+
+`tools/re/` (capstone + pefile, see requirements.txt): `dre.py` helpers, `mksig.py <va> <len>` signature generator, `sigcheck.py` verifies sigs.cpp against the exe. Used for string/xref search and signature generation.
+
+## Launch block (multiplayer song pick)
+
+The stage entry range `[+0x2C, +0x140)` (ReDIVA `struc_775`) holds everything a launch needs:
+pv id, difficulty, edition, clear/life settings, module ids (`+0x78`, 6 x int32, a second copy at `+0x90`),
+items (`+0xA8`, 6 x 5 x int32) and item masks (`+0x120`, 6 x 5 bytes). Result data starts at `+0x140`.
+
+Copying the host's block into a client's current entry inside the `PvGameInitPv` hook launches the
+host's song with the host's performers and outfits, regardless of what the client selected
+(verified in-game: Freely Tomorrow selected -> Roshin Yukai with Rin, module 40).
+Overwriting only pv/difficulty keeps the selected song's performers (wrong characters).
+
+Dead end: `0x1401D5F40` (called by `task_pv_game_open` with the pv id) is virtualized and does not
+behave as a plain `get_pv`: it returned the same static table at `0x1412B5A80` for every pv id.
+Per-player outfits (each player's own module choice) would need the pv_db / module table, deferred.
+
+## Modes and auto-start
+
+RTTI is intact (`.?AVPVsel@@`, `.?AVModeGamePS4_PvselImpl@@`, ...), so `dre.vtables_for()` finds class vtables.
+
+| What | Address | Notes |
+|---|---|---|
+| mode state getter | `0x1402C4810` | `lea rax, [0x14CC61078]` |
+| `shift_next_mode(int)` | `0x1402C4BB0` | sets state `+0x04`, `+0x10 = 1` |
+| `shift_next_mode_sub(int)` | `0x1402C4BE0` | sets state `+0x20`, `+0x2C = 1` |
+| `ModeGamePS4_PvselImpl` vtable | `0x140C837D0` | entry 3 `0x1401ECD10` = song select ctrl; on confirm: `shift_next_mode_sub(7)` then `0x140653C30(_, 0, stage[+0x19] == 0)` |
+
+Mode state as int32 array: `[0]` current mode, `[1]` next mode, `[2]` previous mode, `[5]` frames in sub mode, `[7]` current sub,
+`[8]` next sub, `[9]` previous sub. Observed ids: main menu = mode 9 / sub 42, rhythm game = mode 2,
+song select = sub 5, gameplay = sub 7. The gameplay sub mode's init calls `task_pv_game_init_pv` ~270 ms later.
+
+Auto-start (`launch::StartNow`): from song select, arm the host's block, call `shift_next_mode_sub(7)` and
+`0x140653C30` like song select does. Verified in-game: clean transition, preview music stops, correct song and outfits. Only difference: no "start" jingle (played elsewhere, likely in virtualized code).
+
+Dead end (host pick without playing): swallowing song select's `shift_next_mode_sub(7)` leaves the game on an
+endless NOW LOADING screen (song select has already closed itself), and at that point the stage entry has
+pv/difficulty but **no modules yet** (they are filled between the request and `task_pv_game_init_pv`).
+So the host's own Start is the round start: the complete block is captured in the `PvGameInitPv` hook.
+
+## Synchronized start (loading barrier)
+
+| What | Address | Notes |
+|---|---|---|
+| `TaskPvGame` vtable | `0x140CB9438` | RTTI `.?AVTaskPvGame@?A0x62ecae2b@@`; ctrl `0x1405DA060` -> `pv_game_parent_ctrl` `0x140266420` |
+| `pv_game_parent_data` | `0x1412F0248` | `playing` at `+3`, `update_func` at `+0x18` |
+| `pv_game_parent::ctrl` (update_func) | `0x140265E60` | `if (pv_game_ptr) goto 0x140268100`; the steps behind it are virtualized |
+| `pv_game_ptr` | `0x14CC105A0` | outer state `+0x10` (0 loading, 1 playing, 2 ending), inner loading step `+0x14` |
+
+Loading steps observed: 0 -> 1 -> 2 (asset loading, 2-6 s) -> 3 -> 4 -> 5 -> 6 -> outer 1, steps 3-6 within
+~0.25 s. Step 3 matches AFT's "end wait screen, start song clock". Skipping `pv_game_parent::ctrl` while at
+step 3 keeps NOW LOADING up with everything loaded; on release the song starts immediately and stays in
+sync (verified in-game, also through the multiplayer barrier with a delayed bot).
+
+## Pause
+
+Dead end: `GameEventFunctionPause<GameSwitchControl>` (vtable `0x140CBE318`) and `...Unpause...` (`0x140CBE358`) are
+listener objects `{vtable, control, handler}` registered by `0x14061E3C0`; the dispatcher calls the handler pointer at
+`+0x10` (`0x14061E090` sets `control+0x70 = 1`), not vtable slot 2. They only react to a pause.
+
+The pause itself starts in `pv_game::ctrl` (`0x140241DF0`): if `pv_game+1` (paused) is 0 it asks the pause manager,
+`TaskPauseManagerSwitch` (static object `0x14CC0CA90`, interface at `+0x68` = `0x14CC0CAF8`, vtable `0x140CC2548`),
+slot 3 `0x1401F0C30` = `task alive && dword [iface+8] != 0` (pending request). True (or the force flag
+`pv_game+0x2D2B5`, probably focus loss) runs the pause block (`0x1402424B3`, fires the pause event at `0x1402425A8`).
+Second dead end: refusing that query only stops the song; the pause menu still opens. The menu is the task
+itself: `TaskPauseManagerSwitch` ctrl `0x14065BE90` is a state machine on `task+0x70` (0 = closed, i.e. the
+"pending" dword above). In state 0 it checks the pause button with `button_tapped(input, 0xA0)` (`0x1402AB260`,
+shared by the whole game; this call returns to `0x14065BF8C`) and opens the menu, which then makes the slot-3
+query true. The pause guard Detours `0x1402AB260` and answers false only for that return address; paused =
+`dword [0x14CC0CB00] != 0`. `*pv_game_ptr` is not the object `pv_game::ctrl` runs on (its `+1` reads 1 in play).
+
+## Outfits (per-player modules)
+
+Song select does not leave the modules for later: confirming a song builds a launch-settings record and writes
+it into the stage entry (verified with a write watch on entry +0x78: song select wrote module 266, Rin's yukata).
+- `0x14040B600(stage_data, settings*, bool)`: copies `settings` into stage entry [index]: settings +0x00 pv,
+  +0x08 difficulty, +0x0C edition, +0x30..+0x44 modules[6] -> entry +0x78, +0x48..+0x5C -> entry +0x90 copy.
+  Callers: 0x1401EB84D, 0x1401EBC69, 0x140206BF8, 0x140570459, 0x1406F2EF1, two in virtualized code.
+- `0x1406F2AE0(pvsel)`: song select's "start this song" builder (pv `pvsel+0x262a4`, difficulty `+0x262c8`,
+  edition `+0x262cc`). Per performer, the module comes from the global `0x141750890 + 0x1C0 + slot*4`
+  (`0x141750A50`, the highlighted song's selection), resolved by `0x1404427B0(ctx, module, ...)` (negative
+  values = special choices such as recommended, jump table).
+- Experiment that failed: writing only pv/difficulty/edition into the stage entry before auto-start leaves the
+  modules 0 (default Miku); nothing fills them later.
+- `0x1401EAD50(record, pv, source = null)`: loads the saved choices for `pv` into the record (song select
+  calls it every frame for the highlighted song; per slot `0x1401D5EC0(save data 0x14114C664 from 0x1401D6510(), pv, slot)` then the
+  virtualized `0x1401D94F0`). Resolver context: `0x140441B60()`; resolver third argument: record
+  `+0x338 + 0x10 + slot*0x14`.
+- Per-player outfits (verified in-game, two songs): `launch::OwnModules(pv)` = LoadChoices + Resolve, used by
+  `StartNow(block, ownOutfits)` for clients (setting `own_outfits`, default on).
+
+## Songs (installed check, song select highlight)
+
+- Installed check: `0x140581F50(0x140580490(), pv)` (pv_db lookup, virtualized but callable) returns a pointer
+  to the entry pointer, null when the song isn't installed; `0x1404BCA70(entry, difficulty, edition)` returns
+  the chart or null (edition 2 = either). Song select's start builder uses the same calls.
+- Highlighted song: `0x1406DF6F0(list)` runs every frame on song select, reads the pv as int16 at
+  `list+0xA88` and tail-jumps to the outfit loader `0x1401EAD50`. **Patching it (Detours) crashes the game
+  when song select opens** (fault in an unknown module, consistent with the protector checking that code), so
+  `songs.cpp` uses a hardware execute breakpoint (DR1) and a vectored handler instead (reads rcx, sets RF).
+- pv_db entry (0x3E0 bytes each, contiguous): `+0x08` std::string song name as song select shows it, `+0x28`
+  a second copy (both English with the game in English), `+0x50` song file, `+0x1A0` the pv id as text.
+  `songs::Title(pv)` reads `+0x08`.
+
+### Alt-tab / system pause
+
+Hiding WM_ACTIVATE / WM_ACTIVATEAPP / WM_KILLFOCUS from the game does not stop it (dead end). The song's
+per-frame code `0x140268460` asks `0x1406083B0()` (a global flag, focus lost) and others (`0x1405FEF60`,
+`0x1402B8110`, ...) and then calls the pause manager interface's slot 7 (`[vtable+0x38]`, `0x14065C780`,
+"request pause"), which sets the open flag `iface+0x4C9` (= task `+0x531`). The menu's state 0 then opens it
+(`0x14065BF51`, found with a write watch on task `+0x70`). The pause guard swaps slot 7 in the vtable
+`0x140CC2548` and drops the requests during a round.
+Verified in-game: with the slot-7 guard the song keeps running while alt-tabbed (borderless), but the game
+is silent in the background. The focus flag (`0x1406083B0` = window object `0x14CC014C0` state `+0x68` in
+{4,5}) is only read by the two pause requests (`0x140268460`, `0x14061FF10`) and the input system
+(`0x1402AA419` -> `0x1402AC250`, input ignored while unfocused): the mute is elsewhere (audio engine?). Open.
+
+## UI assets (research for the official-looking room screen)
+
+- Menu art lives in `diva_main.cpk` (23 GB, CRI CPK v7, files 2048-aligned from TocOffset 0x800, not
+  CRILAYLA-compressed) under `rom_steam/rom/2d/`: `spr_nswgam_{menu,cmnbg,cmn,songselector,result,...}.farc`
+  (sprites) and `aet_nswgam_*.bin` (AET layouts), per-language copies in `rom_steam_cn/...` etc. Fonts:
+  `spr_fnt_36.farc`, `spr_fnt_bold36.farc`.
+- Every CPK entry is AES-256-CBC encrypted (key/IV in MikuMikuLibrary `CpkArchive.cs`); inside, the sprite
+  archives are FT-style encrypted FARCs (`FARC` signature, AES-128-CBC + gzip per entry, MikuMikuLibrary
+  `FarcArchive.cs`), then sprite sets with TXP textures. A throwaway CPK reader is in the session scratchpad.
+- Community state (GameBanana, Oct 2026): UI mods only recolor or rearrange existing screens (After Effects +
+  Samyuu's AetPlugin); none adds a new screen. Plan: draw our own screens in the overlay, styled after the game,
+  later with the game's own sprites taken from its loaded sprite sets at runtime (no files, no keys shipped).
+- Runtime capture (F7 "Capture this screen's sprites", ui/gpu_capture.cpp): menu sprites are drawn as indexed
+  quads, vertex = x y z (screen px), packed RGBA, u v; one texture (slot 0) per draw. Sprite sheets are 2048^2
+  BC5 with 2 mips = YCbCr: mip 0 R = luma, G = alpha; mip 1 (half size) R = Cb, G = Cr, each `*1.003922 - 0.503929`;
+  R = Y + 1.5748 Cr, G = Y - 0.1873 Cb - 0.4681 Cr, B = Y + 1.8556 Cb (MikuMikuLibrary TextureDecoderCore).
+  Rows are stored bottom-up. The text font sheet is a 4096^2 BC3 (spr_fnt_*), one quad per glyph.
+- Sprite set .bin (little endian, MikuMikuLibrary SpriteSet.cs): u32 signature, texturesOffset, textureCount,
+  spriteCount, spritesOffset, textureNamesOffset, spriteNamesOffset, spriteModesOffset; sprite = u32 texture,
+  u32 0, uv begin, uv end, x, y, width, height (40 bytes). spr_nswgam_menu.bin: 8 textures, 83 sprites, e.g.
+  SELECTOR_RHYTHMGAME (plate), _EFF (glow), _TXT (label), BTN_TXT_YES_SEL, POPUP_BG01, FOOTER_*, KEYICON_*.
+- Loaded sprite sets at runtime: `std::map<uint32 set id, SPRSET>` at `0x14CBFF3A0` ({head, size}; 3933
+  entries = every set in spr_db, loaded or not), filled by `0x1405B8C20`. Node: left, parent, right, color,
+  isnil `+0x19`, key `+0x20`, `SPRSET` (RTTI `.?AVSPRSET@@`, 0x70 bytes) `+0x28`. SPRSET: `+0x10` the loaded
+  file, `+0x18` its header relocated to 64-bit pointers (u32 sig, u32 texturesOffset, u32 textures, u32
+  sprites, sprite infos*, texture names*, sprite names*, modes*; TXP data is gone after upload), `+0x20`
+  texture object* array, texture object `+0x28` -> D3D holder with the texture and its SRV at `+0x10`/`+0x18`.
+  Set ids seen loaded on the main menu: 2976 menu (84 sprites, 9 textures), 2970 common (279), 2981 (344,
+  CLEAR_ICON_*), 1432/1978 (BG_GREEN...), 3922 (258), font sets 1903-1914. ui/game_sprites.cpp uses all this.
+- The map key is the set's *index* in spr_db (rom_steam_<lang>/rom/2d/spr_db.bin: u32 setCount, setsOffset,
+  spriteCount, spritesOffset; set = u32 id, nameOffset, fileNameOffset, index), not its id: 2970 = SPR_NSWGAM_CMN,
+  2971 CMNBG, 2976 MENU, 2977 MENUBG, 2980 RESULT, 2981 SONGSELECTOR; fonts 1903 SPR_FNT_36, 1907 SPR_FNT_36LATIN9,
+  1909 SPR_FNT_BOLD36, 1913 SPR_FNT_BOLD36LATIN9, 1914 SPR_FNT_CMN (old digit strips NUM12X16...NUM56X46).
+  The user's game runs in English (rom_steam_en sets); only the keyboard is French (key chips say ENTREE/ECHAP).
+
+## Font (research for our text in the game's font)
+
+- fontmap: rom_steam/rom/fontmap.farc (FARC, plain gzip) -> fontmap.bin "FMH3" (ReDIVA src/CRE/font.cpp):
+  u32 sig, pad, fontCount (22), fontOffsetsOffset; font = i32 mapId, u8 advance, lineHeight, boxW, boxH, flags,
+  columnScaleNum, Denom, pad, u32 ?, charsPerRow, charCount, charsOffset; char = u16 code, u8 halfwidth, pad,
+  column, row, glyphOffset, glyphWidth. Glyph rect on the sheet: (column*boxW + glyphOffset, row*boxH,
+  glyphWidth, lineHeight); halfwidth glyphs advance boxW/2-ish, proportional with flags & 2.
+- 36 px sheets: one sprite DIVA_36_38 (4096^2 BC3, white + alpha, bottom-up), 38 px cells, 107 per row,
+  7145 characters (ASCII, Latin, Greek, Cyrillic, symbols, kana, kanji). Width table pairing (tightest fit of the
+  ink against each map's boxes, research script): LATIN9 thin -> map 20, BOLD LATIN9 -> map 21, JP thin -> 15,
+  JP bold -> 17; maps 16/18/19 are monospace (CN/KR/full sets). The 12-13 character maps are digit fonts.
+- Song select titles = the BOLD sheet at ~1.19x (glyphs ~43 px tall at 1080p) with ~+4.5 px between letters
+  (IoU fit against the screenshot: bold 0.69, thin 0.59).
+- Bold italic words ("Help", "Sort", "OK", "Rhythm Game"...) are pre-drawn sprites per language (song select
+  KEYTXT_N_01..13 on a 3-piece chip KEYBS_N_L/C/R; the key name is drawn on the chip at runtime). The exe imports
+  DirectWrite (CDirectWriteFont) but no font family name is in plain sight. Song select digits: per-digit
+  sprites SCORE_NUM24X28_00..09, SONG_NUM40X34_*, RANK_NUM40X48_*; results: SCO_NUM*, FS_NUM*, VP_NUM58X58 strips.
+- Runtime glyph tables (found with F7 "Find font map in memory", verified): static 0x40-byte font records (ReDIVA
+  `font`): +0 i32 sprite id, +4 u8 glyph w, h, box w, h, +8 u8 column scale num, denom, +0xC i32 fontmap id,
+  +0x10 f32 column scale (0.5), +0x18 u64 characters per row (107), +0x20 std::vector<6-byte char> begin/end/cap
+  (65534 entries, indexed by UTF-16 code: init, halfwidth, column, row, offset, width), +0x38 bool spacing.
+  0x14CC60FF0 = map 20, sprite 0xEECE SPR_FNT_36LATIN9_DIVA_36_38; 0x14CC61030 = map 21, sprite 0xEED0
+  SPR_FNT_BOLD36LATIN9_DIVA_36_38 (spr_db). ui/game_sprites.cpp DrawText/TextWidth use them.
+
+## Song jackets (sprite set requests)
+
+Found statically (the real code is in the file's `.bss`; xrefs to the string `./rom/2d/` at 0x140C8CF88 and to
+`SPR_SEL_PV%03d` at 0x140CB5FB8), layout as in ReDIVA's `SPRSET` (src/CRE/sprite.cpp), shifted by one field:
+- `SPRSET::request(this, const char* file, const {char* b, e}* mdata dir)` 0x1405B6BA0: reference `+0x28` (>0: ++ and
+  return), file name std::string `+0x50`, then an async read of `<dir or ./rom/2d/><file .farc>`; ready `+0x38` = 0.
+  File handler `+0x30`. An empty {begin == end} dir means the default (mods are redirected by DivaModLoader).
+- `SprMgr::request(_, idx, file, dir)` 0x1405B8F10 (find by map index 0x1405B8EC0, the map at 0x14CBFF3A0).
+- Public, by spr_db **set id**: `spr::request(id, dir*)` 0x1405B4770, `spr::wait(id)` 0x1405B4810 (call every frame
+  until ready: parses the file, makes the textures, sets ready), `spr::free(id)` 0x1405B48B0 (reference--, unload at 0).
+  `SPRSET::wait` 0x1405B7180, `SPRSET::free` 0x1405B7230.
+- spr_db: set name -> `const uint32_t* id` 0x1405BC770(_, const {begin, end}*); id -> entry 0x1405BC600(_, id),
+  entry `+0x18` file name, `+0x28` map index; sprite name -> id 0x1405BC8F0 (-1 if none). The first argument is
+  ignored by all three (global db under a lock).
+- Song select (0x140581180) builds `SPR_SEL_PV%03d` (set), `SPR_SEL_PV%03d_SONG_JK%03d[_EX]`, `_SONG_LOGO%03d[_EX]`,
+  `_SONG_BG%03d[_EX]`, thumbnails `SPR_SEL_PVTMB_%03d[_EX]`; defaults 0xD50 / 0xD81 = the NOW PRINTING dummies.
+  A song set holds SONG_BG<pv> (1280x720), SONG_JK<pv> (502x502), SONG_LOGO<pv> (860x300: rainbow title + credits).
+- ui/game_sprites.cpp `Jacket(pv)` uses all this (byte-checked before calling; F7 sprite test draws song 1's).
