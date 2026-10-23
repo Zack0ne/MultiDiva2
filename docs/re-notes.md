@@ -25,12 +25,35 @@ Stage data layout (from `task_pv_game_init_pv`):
 - per entry: `+0x2C` pv_id, `+0x34` difficulty, `+0x38` edition, `+0x4C` clear % x100,
   `+0x50` life gauge safety time, `+0x54` life gauge border, `+0x69` ex_stage,
   `+0x78..` per-performer module ids (6 x int32), `+0xA8..` customize items
-- the verified grade (`0x1416E2D00`) and worst counter (`0x1416E2D40`) are `entry[0] + 0x140` / `+0x180`
+- after the launch block, `+0x140..` holds the round's result (ReDIVA `struc_662`: grade, hit counts, max combo,
+  score...), exact MM+ layout being mapped with the round finder (below)
 
-## Verified in-game (see `client/src/game/memory.h`)
+## Score data
 
-PV id `0x1412C2340` is a separate variable (not the stage entry). Result block, live score/combo,
-completion, grade, worst counter, vanilla difficulty and title are all confirmed against the HUD.
+Earlier versions read the score, combo, completion and result through addresses and a result struct inherited from
+the original MultiDiva (which took them from RocketRacer's ShareDiva and from Braasileiro), along with four hook
+signatures and its score-delta heuristic. All of that was removed in 2.1.2 and located again with our own tooling.
+
+`game/round_finder.cpp` (research builds) logs, at the result screen, the current stage entry's result block and
+every place in the exe's static data holding one of its values, with the memory around each. Four rounds (Oct 22):
+
+- **Result** (stage entry `+0x140..`, ReDIVA `struc_662` from `field_0`): `+0x140` grade, `+0x144` total_hit_count[5],
+  `+0x158` hit_count[5], `+0x16C` note count, `+0x170` the counts the result screen shows (cool, fine, safe, sad,
+  worst), `+0x184` their percentages x100 (they sum to 10000), `+0x198` max_combo, `+0x19C` challenge time bonus,
+  `+0x1A0` hold bonus, `+0x1A4` score_final, `+0x1A8` percentage x100, `+0x1AC` slide bonus. Checked against song
+  select's records (AFTER BURNER 347850 / 94.50 %, ACUTE 374070 / 92.48 %).
+- **Live play data**: the final score was also at `0x1412EEFD4`, `0x1412EF568` and `0x1412EF56C` in every round. Around
+  `0x1412EF564` the values follow ReDIVA `pv_game_data` from `life_gauge` on: `+0x00` life gauge (0..255), `+0x04`
+  score, `+0x08` score (second copy), `+0x14` current combo, `+0x28` max_combo, `+0x2C` total_hit_count[5], `+0x40`
+  hit_count[5], `+0x54` reference score, `+0x58` note count, `+0xD0` completion % (float, matches the result's
+  percentage).
+
+## Result screen
+
+`GameResultTask` (string `0x140C82268`, only xref in its constructor around `0x1401E7F35`): the constructor stores
+the vtable (`0x140C821F0`) with `lea rax, [vtable]; mov [task_ptr], rbx; lea rdx, ["GameResultTask"]; mov [rbx], rax`.
+Slots as ReDIVA's `app::Task`: 0 dtor, 1 init (`0x1401E80B0`), 2 ctrl, 3 dest, 4/5 disp/basic. The bodies are
+virtualized, so the mod swaps vtable slot 1 to learn when the result screen opens.
 
 ## Tooling
 
@@ -163,7 +186,7 @@ is silent in the background. The focus flag (`0x1406083B0` = window object `0x14
 - Community state (GameBanana, Oct 2026): UI mods only recolor or rearrange existing screens (After Effects +
   Samyuu's AetPlugin); none adds a new screen. Plan: draw our own screens in the overlay, styled after the game,
   later with the game's own sprites taken from its loaded sprite sets at runtime (no files, no keys shipped).
-- Runtime capture (F7 "Capture this screen's sprites", ui/gpu_capture.cpp): menu sprites are drawn as indexed
+- Runtime capture (Ctrl+F8 "Capture this screen's sprites", ui/gpu_capture.cpp): menu sprites are drawn as indexed
   quads, vertex = x y z (screen px), packed RGBA, u v; one texture (slot 0) per draw. Sprite sheets are 2048^2
   BC5 with 2 mips = YCbCr: mip 0 R = luma, G = alpha; mip 1 (half size) R = Cb, G = Cr, each `*1.003922 - 0.503929`;
   R = Y + 1.5748 Cr, G = Y - 0.1873 Cb - 0.4681 Cr, B = Y + 1.8556 Cb (MikuMikuLibrary TextureDecoderCore).
@@ -203,7 +226,7 @@ is silent in the background. The focus flag (`0x1406083B0` = window object `0x14
   KEYTXT_N_01..13 on a 3-piece chip KEYBS_N_L/C/R; the key name is drawn on the chip at runtime). The exe imports
   DirectWrite (CDirectWriteFont) but no font family name is in plain sight. Song select digits: per-digit
   sprites SCORE_NUM24X28_00..09, SONG_NUM40X34_*, RANK_NUM40X48_*; results: SCO_NUM*, FS_NUM*, VP_NUM58X58 strips.
-- Runtime glyph tables (found with F7 "Find font map in memory", verified): static 0x40-byte font records (ReDIVA
+- Runtime glyph tables (found with Ctrl+F8 "Find font map in memory", verified): static 0x40-byte font records (ReDIVA
   `font`): +0 i32 sprite id, +4 u8 glyph w, h, box w, h, +8 u8 column scale num, denom, +0xC i32 fontmap id,
   +0x10 f32 column scale (0.5), +0x18 u64 characters per row (107), +0x20 std::vector<6-byte char> begin/end/cap
   (65534 entries, indexed by UTF-16 code: init, halfwidth, column, row, offset, width), +0x38 bool spacing.
@@ -227,4 +250,20 @@ Found statically (the real code is in the file's `.bss`; xrefs to the string `./
 - Song select (0x140581180) builds `SPR_SEL_PV%03d` (set), `SPR_SEL_PV%03d_SONG_JK%03d[_EX]`, `_SONG_LOGO%03d[_EX]`,
   `_SONG_BG%03d[_EX]`, thumbnails `SPR_SEL_PVTMB_%03d[_EX]`; defaults 0xD50 / 0xD81 = the NOW PRINTING dummies.
   A song set holds SONG_BG<pv> (1280x720), SONG_JK<pv> (502x502), SONG_LOGO<pv> (860x300: rainbow title + credits).
-- ui/game_sprites.cpp `Jacket(pv)` uses all this (byte-checked before calling; F7 sprite test draws song 1's).
+- ui/game_sprites.cpp `Jacket(pv)` uses all this (byte-checked before calling; Ctrl+F8 sprite test draws song 1's).
+
+## Start sound
+
+`play_se(name, volume)` `0x1405AA540`: found by searching the exe for `se_ft_music_selector_enter_01` (`0x140C85AE0`);
+song select loads it with `lea rcx, [name]` and calls `0x1405AA540` (`0x14020A95C`, `0x1406F8C72`). Its first
+instructions (`mov rdx, rcx; movaps xmm2, xmm1; mov ecx, 1`) are the bytes `launch.cpp` checks before calling it.
+
+## Provenance audit (2.1.2)
+
+Every address, signature and struct in the mod was found with this project's own tools, from ReDIVA's names and
+strings in the exe; each section above says how. Before 2.1.2 the code was compared against the public source of
+the original MultiDiva (client and server, every version), ShareDiva, PDRPC, DivaDllMods (both forks), New Classics,
+ExPatch, MMPlusMods, DivaModLoader and about 30 other open Mega Mix+ plugins: no shared code, signatures or structs
+apart from standard API calls (Direct3D, ImGui backends, Windows) and DivaModLoader's credited `helpers.h`. A few
+game addresses also appear in other mods (the stage data getter, the sprite set loader, `play_se`, the pause button
+check, the song select start builder): they are the same game functions, found here independently as described.

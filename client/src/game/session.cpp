@@ -1,6 +1,9 @@
 #include "session.h"
+#include "launch.h"
 #include "pause_guard.h"
+#include "round_finder.h"
 #include "titles.h"
+#include "../core/config.h"
 #include "../core/log.h"
 
 namespace md {
@@ -11,11 +14,21 @@ static constexpr size_t MaxRecentEvents = 32;
 
 static void LogResult(const GameState& s)
 {
-    Log("result: total=%u combo=%u cool=%u fine=%u safe=%u sad=%u worst=%u worstCounter=%u",
-        s.score.totalScore, s.score.combo, s.score.cool, s.score.fine, s.score.safe, s.score.sad,
-        s.score.worst, s.worstCounter);
-    Log("result: pv=%d diff(vanilla)=%d diff(SLP)=%d grade=%d completion=%.2f title=\"%s\"",
-        s.pvId, s.diffVanilla, s.diffSongLimitPatch, s.grade, s.completion, s.titleGuess);
+    if (!s.resultOk) {
+        Log("result: (score data not located yet)");
+        return;
+    }
+    Log("result: score=%d maxCombo=%d cool=%u fine=%u safe=%u sad=%u worst=%u grade=%d completion=%.2f",
+        s.score, s.maxCombo, s.cool, s.fine, s.safe, s.sad, s.worst, s.grade, s.resultCompletion);
+}
+
+static void Remember(const GameEvent& e)
+{
+    Session& s = g_session;
+    s.recentEvents.push_front(e);
+    if (s.recentEvents.size() > MaxRecentEvents)
+        s.recentEvents.pop_back();
+    s.frameEvents.push_back(e);
 }
 
 static void Handle(const GameEvent& e)
@@ -25,21 +38,10 @@ static void Handle(const GameEvent& e)
 
     Session& s = g_session;
     switch (e.type) {
-    case GameEventType::SongStarted:
-        Log("SongStarted pvId=%d", e.pvId);
-        s.inSong = true;
-        s.practice = false;
-        s.pvId = e.pvId;
-        s.grades.Reset();
-        s.hasLastGrade = false;
-        break;
-    case GameEventType::PracticeStarted:
-        Log("PracticeStarted");
-        s.practice = true;
-        break;
     case GameEventType::SongEnded:
         Log("SongEnded");
         s.inSong = false;
+        s.inResult = false;
         break;
     case GameEventType::ModeShift: {
         int32_t m[12] = {};
@@ -59,40 +61,39 @@ static void Handle(const GameEvent& e)
         else
             Log("PvGameInit stage=%d pv=%d diff=%d edition=%d", e.stageIndex, e.pvId, e.difficulty, e.edition);
         Log("  modules: %d %d %d %d %d %d", e.modules[0], e.modules[1], e.modules[2], e.modules[3], e.modules[4], e.modules[5]);
+        s.inSong = true;
+        s.inResult = false;
+        s.pvId = e.pvId;
         break;
     case GameEventType::ResultShown:
         Log("ResultShown");
         s.inSong = false;
+        s.inResult = true;
         ReadGameState(s.state);
         LogResult(s.state);
+        if (GetConfig().research)
+            finder::OnResultShown();
         break;
     }
+    Remember(e);
 
-    s.recentEvents.push_front(e);
-    if (s.recentEvents.size() > MaxRecentEvents)
-        s.recentEvents.pop_back();
+    // Any mode change that leaves gameplay (back to song select, the menu...) ends the song or its results.
+    if (e.type == GameEventType::ModeShift && (s.inSong || s.inResult)
+        && !(e.edition == 1 && e.pvId == mode::SubGameMain))
+        Handle({ GameEventType::SongEnded, -1, e.tick });
 }
 
 void SessionTick()
 {
     g_session.frameEvents.clear();
     GameEvent e;
-    while (g_gameEvents.TryPop(e)) {
+    while (g_gameEvents.TryPop(e))
         Handle(e);
-        g_session.frameEvents.push_back(e);
-    }
 
     Session& s = g_session;
-    ReadGameState(s.state);
+    if (!s.inResult) // keep the result read when the result screen opened
+        ReadGameState(s.state);
     ReadStageState(s.stage);
-
-    if (s.inSong && s.state.liveOk) {
-        NoteGrade grade;
-        if (s.grades.Update(s.state.liveScore, s.state.liveCombo, grade)) {
-            s.lastGrade = grade;
-            s.hasLastGrade = true;
-        }
-    }
 
     titles::Tick();
 }

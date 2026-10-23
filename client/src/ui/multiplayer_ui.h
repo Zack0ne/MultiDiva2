@@ -3,7 +3,7 @@
 namespace md::ui {
 
 // F8: the full-screen multiplayer screens (connect / room list, then the room), or the old ImGui window when
-// "classic" is on (F7).
+// "classic" is on (Ctrl+F8).
 void DrawLobby(bool* open);
 bool LobbyIsFullScreen(); // the last DrawLobby drew a full-screen screen (the game's keyboard is blocked meanwhile)
 void SetClassicLobby(bool classic);

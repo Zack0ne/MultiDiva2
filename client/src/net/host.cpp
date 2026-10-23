@@ -243,9 +243,11 @@ static void Run()
             return Set(Phase::Failed, "The server did not start (is port 3939 in use?).");
     }
 
-    // 2. cloudflared: download once, and always check Cloudflare's signature before running it.
-    std::wstring tunnelExe = BinDir() + L"\\cloudflared.exe";
-    CreateDirectoryW(BinDir().c_str(), nullptr);
+    // 2. cloudflared: download once (outside the mod folder, so updates keep it), and always check Cloudflare's
+    // signature before running it. Older versions kept it in bin\.
+    std::wstring tunnelExe = DataDir() + L"\\cloudflared.exe";
+    if (GetFileAttributesW(tunnelExe.c_str()) == INVALID_FILE_ATTRIBUTES)
+        CopyFileW((BinDir() + L"\\cloudflared.exe").c_str(), tunnelExe.c_str(), TRUE);
     if (GetFileAttributesW(tunnelExe.c_str()) == INVALID_FILE_ATTRIBUTES) {
         Set(Phase::Downloading, "Downloading cloudflared (first time only)...");
         if (!Download(CloudflaredUrl, tunnelExe))

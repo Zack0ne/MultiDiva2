@@ -7,6 +7,7 @@
 #include "../core/helpers.h"
 #include "../core/log.h"
 
+#include <atomic>
 #include <detours.h>
 #include <intrin.h>
 
@@ -17,8 +18,6 @@ BoundedQueue<GameEvent, 256> g_gameEvents;
 const char* ToString(GameEventType type)
 {
     switch (type) {
-    case GameEventType::SongStarted: return "SongStarted";
-    case GameEventType::PracticeStarted: return "PracticeStarted";
     case GameEventType::SongEnded: return "SongEnded";
     case GameEventType::ResultShown: return "ResultShown";
     case GameEventType::PvGameInit: return "PvGameInit";
@@ -34,13 +33,10 @@ static void Emit(GameEventType type, int32_t pvId = -1)
     g_gameEvents.TryPush({ type, pvId, GetTickCount() });
 }
 
-// Locations are filled in at Install() from the resolved signatures.
-HOOK(void, __fastcall, SongStart, nullptr, int pvId)
-{
-    Emit(GameEventType::SongStarted, pvId);
-    originalSongStart(pvId);
-}
+// A song was launched and its result screen hasn't opened yet (the result task's init may run several frames).
+static std::atomic<bool> s_resultPending{false};
 
+// Locations are filled in at Install() from the resolved signatures.
 // task_pv_game_init_pv: about to read the current stage entry and open the PVGAME task.
 HOOK(void, __fastcall, PvGameInitPv, nullptr)
 {
@@ -56,6 +52,7 @@ HOOK(void, __fastcall, PvGameInitPv, nullptr)
     SafeRead(entry + stage::Edition, e.edition);
     SafeRead(entry + stage::Modules, e.modules);
     g_gameEvents.TryPush(e);
+    s_resultPending = true;
 
     originalPvGameInitPv();
 }
@@ -88,22 +85,28 @@ HOOK(void, __fastcall, PvGameParentCtrl, nullptr, void* parent)
     originalPvGameParentCtrl(parent);
 }
 
-HOOK(__int64, __fastcall, SongPracticeStart, nullptr, __int64 a1, __int64 a2)
+// GameResultTask::init (vtable slot 1, app::Task layout as in ReDIVA): the result screen is opening. Its body is
+// virtualized, so the vtable slot is swapped instead of patching code.
+using TaskInitFn = bool(__fastcall*)(void* task);
+static TaskInitFn s_originalResultInit = nullptr;
+
+static bool __fastcall ResultInit(void* task)
 {
-    Emit(GameEventType::PracticeStarted);
-    return originalSongPracticeStart(a1, a2);
+    if (s_resultPending.exchange(false))
+        Emit(GameEventType::ResultShown);
+    return s_originalResultInit(task);
 }
 
-HOOK(__int64, __stdcall, SongEnd, nullptr)
+static bool HookVtableSlot(void* vtable, int slot, void* detour, void** original)
 {
-    Emit(GameEventType::SongEnded);
-    return originalSongEnd();
-}
-
-HOOK(int, __fastcall, PrintResult, nullptr, int a1)
-{
-    Emit(GameEventType::ResultShown);
-    return originalPrintResult(a1);
+    void** entry = (void**)vtable + slot;
+    DWORD oldProtect;
+    if (!VirtualProtect(entry, sizeof(void*), PAGE_READWRITE, &oldProtect))
+        return false;
+    *original = *entry;
+    *entry = detour;
+    VirtualProtect(entry, sizeof(void*), oldProtect, &oldProtect);
+    return true;
 }
 
 namespace hooks {
@@ -130,14 +133,12 @@ static bool Attach(sigs::Id id, void** original, void* detour)
 int Install()
 {
     int installed = 0;
-    installed += Attach(sigs::SongStart, (void**)&originalSongStart, (void*)implOfSongStart);
-    installed += Attach(sigs::SongPracticeStart, (void**)&originalSongPracticeStart, (void*)implOfSongPracticeStart);
-    installed += Attach(sigs::SongEnd, (void**)&originalSongEnd, (void*)implOfSongEnd);
-    installed += Attach(sigs::PrintResult, (void**)&originalPrintResult, (void*)implOfPrintResult);
     installed += Attach(sigs::PvGameInitPv, (void**)&originalPvGameInitPv, (void*)implOfPvGameInitPv);
     installed += Attach(sigs::ShiftNextMode, (void**)&originalShiftNextMode, (void*)implOfShiftNextMode);
     installed += Attach(sigs::ShiftNextModeSub, (void**)&originalShiftNextModeSub, (void*)implOfShiftNextModeSub);
     installed += Attach(sigs::PvGameParentCtrl, (void**)&originalPvGameParentCtrl, (void*)implOfPvGameParentCtrl);
+    if (void* vtable = sigs::Get(sigs::GameResultTaskVtable).address)
+        installed += HookVtableSlot(vtable, 1, (void*)ResultInit, (void**)&s_originalResultInit);
     Log("%d/%d hooks installed", installed, (int)sigs::Count);
     return installed;
 }

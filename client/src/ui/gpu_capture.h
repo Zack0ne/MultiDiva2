@@ -1,7 +1,7 @@
 #pragma once
 #include <d3d11.h>
 
-// Research tool (F7): records one game frame at the Direct3D level, to learn which textures and sprite
+// Research tool (Ctrl+F8): records one game frame at the Direct3D level, to learn which textures and sprite
 // rectangles the game's menus are drawn with. Writes mods\MultiDiva\capture\: every texture the frame
 // samples (as .dds, already decoded by the game) and draws.txt (each draw: texture, vertex data).
 namespace md::ui::capture {

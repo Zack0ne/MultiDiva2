@@ -3,7 +3,7 @@
 #include <string>
 
 // PV id -> song title, learned whenever a song plays locally (the game only exposes the title of
-// the song being played) and kept in <ModDir>\titles.txt across sessions.
+// the song being played) and kept in %LOCALAPPDATA%\MultiDiva2\titles.txt across sessions.
 namespace md::titles {
 
 void Load();

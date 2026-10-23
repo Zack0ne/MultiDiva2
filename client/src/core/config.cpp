@@ -11,7 +11,7 @@ static Config s_config;
 
 Config& GetConfig() { return s_config; }
 
-static std::wstring ConfigPath() { return ModDir() + L"\\multidiva.ini"; }
+static std::wstring ConfigPath() { return DataFile(L"multidiva.ini"); }
 
 static std::string Trim(const std::string& s)
 {

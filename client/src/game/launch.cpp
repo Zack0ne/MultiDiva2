@@ -61,17 +61,6 @@ bool LastLaunch(Block& out)
     return s_hasLast;
 }
 
-// Mode state fields (int32 index into the struct at addr::ModeState), mapped from in-game logs:
-// [0] current mode, [1] next, [2] previous, [5] frames, [7] current sub, [8] next sub, [9] previous sub.
-namespace mode {
-constexpr int CurrentMode = 0;
-constexpr int CurrentSub = 7;
-constexpr int NextSub = 8;
-constexpr int32_t RhythmGame = 2;
-constexpr int32_t SubSongSelect = 5;
-constexpr int32_t SubGameMain = 7;
-} // namespace mode
-
 // Called by song select right after requesting SubGameMain: void (unused, int = 0, bool).
 // Not signature-scanned (tiny thunk), so the bytes are checked before every call.
 static constexpr uintptr_t SelectStartFlag = 0x140653C30;

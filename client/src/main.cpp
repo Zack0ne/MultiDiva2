@@ -4,8 +4,10 @@
 #include <d3d11.h>
 
 #include "core/config.h"
+#include "core/crash.h"
 #include "core/log.h"
 #include "core/mod.h"
+#include "core/version.h"
 #include "game/hooks.h"
 #include "game/pause_guard.h"
 #include "game/songs.h"
@@ -15,14 +17,14 @@
 #include "mp/multiplayer.h"
 #include "ui/overlay.h"
 
-#define MULTIDIVA_VERSION "2.1.1"
-
 extern "C" {
 
 __declspec(dllexport) void Init()
 {
     md::LogInit();
     md::Log("MultiDiva %s loading from %ls", MULTIDIVA_VERSION, md::ModDir().c_str());
+    md::Log("settings and downloads in %ls", md::DataDir().c_str());
+    md::crash::Install();
     md::LoadConfig();
     md::titles::Load();
     md::sigs::Resolve();
@@ -33,6 +35,7 @@ __declspec(dllexport) void Init()
 
 __declspec(dllexport) void D3DInit(IDXGISwapChain* swapChain, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
+    md::crash::Install(); // again: the game may have set its own crash filter since Init
     md::ui::OverlayInit(swapChain, device, deviceContext);
 }
 
@@ -59,6 +62,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         // so only tear down the overlay on an explicit FreeLibrary.
         if (!reserved)
             md::ui::OverlayShutdown();
+        else
+            md::crash::MarkCleanExit();
         md::LogShutdown();
         break;
     }

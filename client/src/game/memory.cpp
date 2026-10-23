@@ -38,31 +38,6 @@ const char* ToString(FinalGrade g)
     return "?";
 }
 
-// MSVC x64 std::string: { union { char buf[16]; char* ptr; }; size_t size; size_t capacity; }
-static void GuessMsvcString(const uint8_t raw[32], char* out, size_t outSize)
-{
-    out[0] = '\0';
-    uint64_t size, capacity;
-    memcpy(&size, raw + 16, 8);
-    memcpy(&capacity, raw + 24, 8);
-    if (capacity < 15 || size > capacity || size > 4096)
-        return;
-
-    const char* text = (const char*)raw;
-    if (capacity > 15) {
-        uint64_t ptr;
-        memcpy(&ptr, raw, 8);
-        text = (const char*)ptr;
-    }
-
-    size_t n = (size_t)size < outSize - 1 ? (size_t)size : outSize - 1;
-    if (!SafeCopy(out, text, n)) {
-        out[0] = '\0';
-        return;
-    }
-    out[n] = '\0';
-}
-
 uintptr_t StageEntryAddress(int32_t index)
 {
     // Mirrors the game: out-of-range indices fall back to entry 2.
@@ -85,19 +60,21 @@ void ReadStageState(StageState& out)
 
 void ReadGameState(GameState& s)
 {
-    s.scoreOk = SafeRead(addr::MainScore, s.score);
-    s.liveOk = SafeRead(addr::LiveScore, s.liveScore) && SafeRead(addr::LiveCombo, s.liveCombo);
-    s.completionOk = SafeRead(addr::Completion, s.completion);
-    s.pvOk = SafeRead(addr::PvId, s.pvId)
-          && SafeRead(addr::PvDiffVanilla, s.diffVanilla)
-          && SafeRead(addr::PvDiffSongLimitPatch, s.diffSongLimitPatch);
-    s.gradeOk = SafeRead(addr::PvGrade, s.grade);
-    s.worstOk = SafeRead(addr::WorstCounter, s.worstCounter);
+    s = GameState{};
+    s.liveOk = SafeRead(addr::PlayData + play::Score, s.liveScore) && SafeRead(addr::PlayData + play::Combo, s.liveCombo)
+        && SafeRead(addr::PlayData + play::Completion, s.completion);
 
-    if (SafeRead(addr::PvTitle, s.titleRaw))
-        GuessMsvcString(s.titleRaw, s.titleGuess, sizeof(s.titleGuess));
-    else
-        s.titleGuess[0] = '\0';
+    int32_t index = 0, counts[5] = {}, percentage = 0;
+    uintptr_t entry = SafeRead(addr::StageData + stage::IndexOffset, index) ? StageEntryAddress(index) : 0;
+    s.resultOk = entry && SafeRead(entry + stage::Grade, s.grade) && SafeRead(entry + stage::ResultCounts, counts)
+        && SafeRead(entry + stage::MaxCombo, s.maxCombo) && SafeRead(entry + stage::Score, s.score)
+        && SafeRead(entry + stage::Percentage, percentage);
+    s.cool = counts[0];
+    s.fine = counts[1];
+    s.safe = counts[2];
+    s.sad = counts[3];
+    s.worst = counts[4];
+    s.resultCompletion = percentage / 100.0f;
 }
 
 } // namespace md

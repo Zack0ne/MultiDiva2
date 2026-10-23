@@ -3,11 +3,11 @@
 
 namespace md::sigs {
 
-enum Id { SongStart, SongPracticeStart, SongEnd, PrintResult, PvGameInitPv, ShiftNextMode, ShiftNextModeSub, PvGameParentCtrl, Count };
+enum Id { PvGameInitPv, ShiftNextMode, ShiftNextModeSub, PvGameParentCtrl, GameResultTaskVtable, Count };
 
 struct Result {
     const char* name;
-    void* address;     // nullptr if not found
+    void* address;      // nullptr if not found
     uintptr_t known103; // address found by static analysis of DivaMegaMix.exe v1.03
 };
 

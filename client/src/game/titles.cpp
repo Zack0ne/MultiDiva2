@@ -13,7 +13,7 @@ namespace md::titles {
 static std::map<int32_t, std::string> s_titles;
 static int32_t s_recordedPv = -1; // PV whose title was already checked during this song
 
-static std::wstring FilePath() { return ModDir() + L"\\titles.txt"; }
+static std::wstring FilePath() { return DataFile(L"titles.txt"); }
 
 void Load()
 {
@@ -66,14 +66,13 @@ void Tick()
     if (s.pvId <= 0 || s_recordedPv == s.pvId)
         return;
 
-    // The title string may still hold the previous song during loading, so only trust it once
-    // the song is actually playing.
-    if (sync::ReadState().outer != 1 || !s.state.titleGuess[0])
+    // Once the song plays, its title comes from the game's song list (songs::Title).
+    if (sync::ReadState().outer != 1)
         return;
 
     s_recordedPv = s.pvId;
-    std::string title = s.state.titleGuess;
-    if (Find(s.pvId) != title) {
+    std::string title = songs::Title(s.pvId);
+    if (!title.empty() && s_titles[s.pvId] != title) {
         s_titles[s.pvId] = title;
         Save();
         Log("title: PV %d = %s", s.pvId, title.c_str());

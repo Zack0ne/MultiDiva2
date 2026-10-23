@@ -11,7 +11,7 @@ void InstallInputBlock();
 // multiplayer screen is open).
 void SetKeyboardBlocked(bool blocked);
 
-// The real key state, also while the game's keyboard is blocked (our own hotkeys: F7, F8, F9).
+// The real key state, also while the game's keyboard is blocked (our own hotkeys: F8, Ctrl+F8, F9).
 bool RealKeyDown(int vk);
 
 // Esc for an overlay window (round results): while captured, an Esc press is hidden from the game (until

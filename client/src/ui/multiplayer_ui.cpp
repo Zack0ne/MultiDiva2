@@ -1,5 +1,6 @@
 #include "multiplayer_ui.h"
 #include "avatars.h"
+#include "bug_report.h"
 #include "glyphs.h"
 #include "input_block.h"
 #include "leaderboard.h"
@@ -16,6 +17,7 @@
 #include "../game/titles.h"
 #include "../mp/multiplayer.h"
 #include "../net/host.h"
+#include "../net/report.h"
 
 #include <algorithm>
 #include <cctype>
@@ -400,7 +402,7 @@ static void DrawChat(const mp::State& s)
 
 // ---- the full-screen screens (F8): connect / room list, then the room (ui/room_scene) ----
 
-static bool s_classic = true; // the ImGui window; F7 switches to the full-screen screens (work in progress)
+static bool s_classic = true; // the ImGui window; Ctrl+F8 switches to the full-screen screens (work in progress)
 static bool s_fullScreen = false; // the last DrawLobby drew a full-screen screen
 static int s_screenFrame = -1;    // ImGui frame it was last drawn in
 static bool s_addressSetup = false;
@@ -759,8 +761,21 @@ void DrawLobby(bool* open)
             SaveConfig();
         ImGui::SameLine();
         ImGui::TextColored(Dim, cfg.ownOutfits ? "Your Customize choices for each song." : "Same outfits as the host.");
+        if (report::Enabled()) {
+            const char* label = "Report a bug";
+            float w = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2;
+            fit::Stretchy stretchy(-1);
+            ImGui::SameLine(ImMax(ImGui::GetWindowContentRegionMax().x - w, ImGui::GetCursorPosX()));
+            if (ImGui::SmallButton(label))
+                OpenBugReport();
+        }
         ImGui::Separator();
         DrawChat(s);
+    }
+    if (!s.inRoom && report::Enabled()) {
+        ImGui::Spacing();
+        if (ImGui::SmallButton("Report a bug"))
+            OpenBugReport();
     }
     s_wanted = fit::Measure();
     ImGui::End();

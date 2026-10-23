@@ -69,53 +69,15 @@ static void DrawSignatures()
 static void DrawLive(const Session& s)
 {
     const GameState& g = s.state;
-    ImGui::Text("State: %s%s   hook pvId=%d", s.inSong ? "in song" : "menu", s.practice ? " (practice)" : "", s.pvId);
-
-    if (BeginValueTable("live")) {
-        Row("Live score", addr::LiveScore, g.liveOk, "%d", g.liveScore);
-        Row("Live combo", addr::LiveCombo, g.liveOk, "%d", g.liveCombo);
-        Row("Completion", addr::Completion, g.completionOk, "%.2f %%", g.completion);
-        Row("PV id", addr::PvId, g.pvOk, "%d", g.pvId);
-        Row("Difficulty (vanilla)", addr::PvDiffVanilla, g.pvOk, "%d  %s", g.diffVanilla, ToString((Difficulty)g.diffVanilla));
-        Row("Difficulty (SLP)", addr::PvDiffSongLimitPatch, g.pvOk, "%d  %s", g.diffSongLimitPatch, ToString((Difficulty)g.diffSongLimitPatch));
-        Row("Grade", addr::PvGrade, g.gradeOk, "%d  %s", g.grade, ToString((FinalGrade)g.grade));
-        Row("Worst counter", addr::WorstCounter, g.worstOk, "%u", g.worstCounter);
-        Row("Title (guess)", addr::PvTitle, true, "%s", g.titleGuess[0] ? g.titleGuess : "(not a std::string?)");
-        ImGui::EndTable();
-    }
-
-    ImGui::TextColored(Dim, "Title raw:");
-    for (int i = 0; i < 32; i++) {
-        if (i % 16)
-            ImGui::SameLine(0, 4);
-        ImGui::TextColored(Dim, "%02X", g.titleRaw[i]);
-    }
-}
-
-static void DrawResult(const GameState& g)
-{
-    const DivaScore& d = g.score;
-    if (!BeginValueTable("result"))
+    ImGui::Text("State: %s   pv=%d", s.inSong ? "in song" : s.inResult ? "result screen" : "menu", s.pvId);
+    if (!g.liveOk && !g.resultOk) {
+        ImGui::TextColored(Dim, "Score data not located yet (research: round finder at the result screen).");
         return;
-    Row("Total score", addr::MainScore, g.scoreOk, "%u", d.totalScore);
-    Row("Combo", addr::MainScore + offsetof(DivaScore, combo), g.scoreOk, "%u", d.combo);
-    Row("Cool / Fine", addr::MainScore + offsetof(DivaScore, cool), g.scoreOk, "%u / %u", d.cool, d.fine);
-    Row("Safe / Sad / Worst", addr::MainScore + offsetof(DivaScore, safe), g.scoreOk, "%u / %u / %u", d.safe, d.sad, d.worst);
-    Row("Pre-adjust C/F/S/S/W", addr::MainScore + offsetof(DivaScore, preAdjustCool), g.scoreOk, "%u / %u / %u / %u / %u",
-        d.preAdjustCool, d.preAdjustFine, d.preAdjustSafe, d.preAdjustSad, d.preAdjustWorst);
-    for (int i = 0; i < 8; i++)
-        Row(i == 0 ? "Unknown[0..7]" : "", addr::MainScore + offsetof(DivaScore, unknown) + i * 4, g.scoreOk, "%u", d.unknown[i]);
-    ImGui::EndTable();
-}
-
-static void DrawGrades(const Session& s)
-{
-    ImGui::Text("Last delta: %d   last grade: %s", s.grades.LastDelta(), s.hasLastGrade ? ToString(s.lastGrade) : "-");
-    for (int i = 0; i < (int)NoteGrade::Count; i++) {
-        if (i)
-            ImGui::SameLine(0, 16);
-        ImGui::Text("%s: %u", ToString((NoteGrade)i), s.grades.Count((NoteGrade)i));
     }
+    ImGui::Text("Live: score %d  combo %d  %.2f %%", g.liveScore, g.liveCombo, g.completion);
+    if (g.resultOk)
+        ImGui::Text("Result: score %d  max combo %d  %.2f %%  grade %s  C/F/S/S/W %u/%u/%u/%u/%u", g.score,
+            g.maxCombo, g.resultCompletion, ToString((FinalGrade)g.grade), g.cool, g.fine, g.safe, g.sad, g.worst);
 }
 
 static void DrawEvents(const Session& s)
@@ -124,9 +86,7 @@ static void DrawEvents(const Session& s)
     if (s.recentEvents.empty())
         ImGui::TextColored(Dim, "No hook events yet. Start a song.");
     for (const GameEvent& e : s.recentEvents) {
-        if (e.type == GameEventType::SongStarted)
-            ImGui::Text("%6.1fs ago  %s pvId=%d", (now - e.tick) / 1000.0f, ToString(e.type), e.pvId);
-        else if (e.type == GameEventType::PvGameInit)
+        if (e.type == GameEventType::PvGameInit)
             ImGui::Text("%6.1fs ago  %s stage=%d pv=%d %s ed=%d%s", (now - e.tick) / 1000.0f, ToString(e.type),
                 e.stageIndex, e.pvId, ToString((Difficulty)e.difficulty), e.edition, e.overridden ? "  OVERRIDDEN" : "");
         else
@@ -327,7 +287,7 @@ void DrawDebugPanel(bool* open)
 {
     ImGui::SetNextWindowSize(ImVec2(520, 640), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("MultiDiva2 debug (F7)", open)) {
+    if (!ImGui::Begin("MultiDiva2 debug (Ctrl+F8)", open)) {
         ImGui::End();
         return;
     }
@@ -337,10 +297,6 @@ void DrawDebugPanel(bool* open)
         DrawSignatures();
     if (ImGui::CollapsingHeader("Live state", ImGuiTreeNodeFlags_DefaultOpen))
         DrawLive(s);
-    if (ImGui::CollapsingHeader("Note grades (inferred)", ImGuiTreeNodeFlags_DefaultOpen))
-        DrawGrades(s);
-    if (ImGui::CollapsingHeader("Result block (DivaScore)"))
-        DrawResult(s.state);
     if (ImGui::CollapsingHeader("Stage data (song launch)", ImGuiTreeNodeFlags_DefaultOpen))
         DrawStage(s);
     if (ImGui::CollapsingHeader("Launch override", ImGuiTreeNodeFlags_DefaultOpen))

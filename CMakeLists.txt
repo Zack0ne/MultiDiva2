@@ -21,13 +21,14 @@ add_library(MultiDiva SHARED
     client/src/main.cpp
     client/src/core/base64.cpp
     client/src/core/config.cpp
+    client/src/core/crash.cpp
     client/src/core/log.cpp
     client/src/core/mod.cpp
     client/src/game/hooks.cpp
     client/src/game/launch.cpp
     client/src/game/memory.cpp
     client/src/game/memscan.cpp
-    client/src/game/note_grade.cpp
+    client/src/game/round_finder.cpp
     client/src/game/pause_guard.cpp
     client/src/game/session.cpp
     client/src/game/sigs.cpp
@@ -39,8 +40,10 @@ add_library(MultiDiva SHARED
     client/src/game/watch.cpp
     client/src/mp/multiplayer.cpp
     client/src/net/host.cpp
+    client/src/net/report.cpp
     client/src/net/ws_client.cpp
     client/src/ui/avatars.cpp
+    client/src/ui/bug_report.cpp
     client/src/ui/debug_panel.cpp
     client/src/ui/game_sprites.cpp
     client/src/ui/glyphs.cpp

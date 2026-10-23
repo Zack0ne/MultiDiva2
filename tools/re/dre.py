@@ -11,8 +11,9 @@ pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_E
 BASE = pe.OPTIONAL_HEADER.ImageBase
 IMG = pe.get_memory_mapped_image()  # bytes indexed by RVA
 
-# Section names are scrambled by the protector; the real game code is the one holding SongStart.
-text = next(s for s in pe.sections if s.VirtualAddress <= 0x43B310 < s.VirtualAddress + s.Misc_VirtualSize)
+# Section names are scrambled by the protector; the real game code is the one holding the entry of
+# task_pv_game_init_pv (0x1404414B0, see docs/re-notes.md "Song launch").
+text = next(s for s in pe.sections if s.VirtualAddress <= 0x4414B0 < s.VirtualAddress + s.Misc_VirtualSize)
 TEXT_LO = text.VirtualAddress
 TEXT_HI = text.VirtualAddress + text.Misc_VirtualSize
 

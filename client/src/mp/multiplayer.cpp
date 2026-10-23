@@ -318,8 +318,7 @@ static void OnStart(const json& d)
     s_lastScoreSent = 0;
 
     if (s_hostStartSent) {
-        // Echo of our own start: the host's song is already loading (the game only reports
-        // SongStarted ~100 ms after launch, so inSong can't be used here).
+        // Echo of our own start: the host's song is already loading.
         s_hostStartSent = false;
         s.inRound = true;
         return; // the barrier was armed when we sent the start
@@ -439,11 +438,6 @@ static json ScoreJson()
         { "score", g.liveScore },
         { "combo", g.liveCombo },
         { "completion", g.completion },
-        { "cool", g_session.grades.Count(NoteGrade::Cool) },
-        { "fine", g_session.grades.Count(NoteGrade::Good) },
-        { "safe", g_session.grades.Count(NoteGrade::Safe) },
-        { "sad", 0 },
-        { "worst", g.worstCounter },
     };
 }
 
@@ -455,13 +449,11 @@ static void SendFinish(bool fromResultScreen)
 
     const GameState& g = g_session.state;
     json result;
-    if (fromResultScreen) {
-        const DivaScore& d = g.score;
+    if (fromResultScreen && g.resultOk) {
         result = {
-            { "score", (int)d.totalScore }, { "combo", (int)d.combo }, { "completion", g.completion },
-            { "cool", (int)d.cool }, { "fine", (int)d.fine }, { "safe", (int)d.safe }, { "sad", (int)d.sad },
-            { "worst", (int)g.worstCounter }, { "grade", g.grade }, { "maxCombo", (int)d.combo },
-            { "failed", g.grade == (int32_t)FinalGrade::Failed },
+            { "score", g.score }, { "combo", g.maxCombo }, { "completion", g.resultCompletion },
+            { "cool", g.cool }, { "fine", g.fine }, { "safe", g.safe }, { "sad", g.sad }, { "worst", g.worst },
+            { "grade", g.grade }, { "maxCombo", g.maxCombo }, { "failed", g.grade == (int32_t)FinalGrade::Failed },
         };
     } else {
         result = ScoreJson();
@@ -534,8 +526,11 @@ void Tick()
         s_hoverSent = -2; // becoming host again sends the current highlight
     }
 
-    // Connection status changes.
+    // Connection status changes. A connect that fails within a frame goes Disconnected -> Connecting ->
+    // Disconnected between two ticks, so a disconnected socket while we think we're connecting counts too.
     net::WsClient::Status status = s_ws.GetStatus();
+    if (status == net::WsClient::Status::Disconnected && s.conn == Conn::Connecting)
+        s_lastStatus = net::WsClient::Status::Connecting;
     if (status != s_lastStatus) {
         if (status == net::WsClient::Status::Connected) {
             uint64_t steamId = steam::MySteamId();

@@ -5,10 +5,8 @@
 namespace md {
 
 enum class GameEventType : uint8_t {
-    SongStarted,     // pvId valid
-    PracticeStarted,
-    SongEnded,
-    ResultShown,
+    SongEnded,       // left the song or its result screen (from the mode shift that leaves gameplay)
+    ResultShown,     // GameResultTask::init, once per song
     ModeShift,       // pvId = requested mode id, edition = 0 (mode) / 1 (sub mode)
     PvGameState,     // pv_game state machine changed: pvId = outer state, difficulty = inner (loading) step
     PvGameInit,      // pvId/difficulty/edition = what the game launches; overridden = rewritten by launch::Arm

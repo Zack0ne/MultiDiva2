@@ -7,7 +7,7 @@
 
 namespace md::watch {
 
-// Real game code (section names are scrambled): .text-like range holding SongStart etc.
+// Real game code (section names are scrambled): the section holding task_pv_game_init_pv and the other hooks.
 constexpr uintptr_t CodeBegin = 0x140001000;
 constexpr uintptr_t CodeEnd = 0x140B24A00;
 

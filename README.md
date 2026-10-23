@@ -30,8 +30,8 @@ Join a room with friends, the host picks a song, and it starts for everyone at t
 
 | Key | |
 |---|---|
-| F7 | extra options (work-in-progress screens) |
 | F8 | MultiDiva2 window: connect, host, room, chat |
+| Ctrl+F8 | extra options (work-in-progress screens) |
 | F9 | hide everything MultiDiva2 shows |
 
 - **Joining:** paste the address your friend sends you (`wss://...`) into *Server* and click *Connect*.
@@ -41,12 +41,14 @@ Join a room with friends, the host picks a song, and it starts for everyone at t
 
 More on hosting, including a permanent address of your own: [docs/hosting.md](docs/hosting.md).
 
+Settings are kept in `%LOCALAPPDATA%\MultiDiva2`, so updates don't reset them.
+
 ## For later
 
 Things I'd like to add (no promises on when):
 
 - Song preview in the room: hear the song the host is looking at, like osu!
-- Full-screen multiplayer screens drawn with the game's own art (already in the works, press F7 to try them, the option is called "Full-screen F8 screens (work in progress)")
+- Full-screen multiplayer screens drawn with the game's own art (already in the works, press Ctrl+F8 to try them, the option is called "Full-screen F8 screens (work in progress)")
 - Results screen and round banners in the game's style
 - Restyled leaderboard cards
 - A Multiplayer entry in the main menu (edit: if that's even possible lol)
@@ -73,8 +75,14 @@ Protocol: [docs/protocol.md](docs/protocol.md). Game internals the mod relies on
   `client/src/core/helpers.h` is its helper header (MIT licence, notice in the file).
 - File formats and game structures were figured out with the help of public research projects:
   [MikuMikuLibrary](https://github.com/blueskythlikesclouds/MikuMikuLibrary) and
-  [ReDIVA](https://github.com/korenkonder/ReDIVA). No code from them is included. Apart from the DivaModLoader
-  header above, there's no code from any other mod either.
+  [ReDIVA](https://github.com/korenkonder/ReDIVA). No code from them is included.
+- **A correction about versions 2.1.0 and 2.1.1:** they still contained pieces carried over from the original
+  MultiDiva without my knowing: a few game addresses, hook signatures and a score struct, which it had in turn taken
+  from [ShareDiva](https://github.com/RocketRacer/MegaMixPlusShareDivaMod) by RocketRacer and from research by
+  Braasileiro. They weren't credited here, which they should have been. Since 2.1.2 all of it is removed and
+  replaced with things found with this project's own tools (how each one was found is in
+  [docs/re-notes.md](docs/re-notes.md)). Apart from the DivaModLoader header above, there's no code from any other
+  mod.
 - Libraries: [Dear ImGui](https://github.com/ocornut/imgui), [Microsoft Detours](https://github.com/microsoft/Detours),
   [nlohmann/json](https://github.com/nlohmann/json), [stb](https://github.com/nothings/stb),
   [coder/websocket](https://github.com/coder/websocket), [cloudflared](https://github.com/cloudflare/cloudflared)

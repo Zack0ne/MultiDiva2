@@ -64,10 +64,10 @@ void DrawText(ImDrawList* dl, Font f, ImVec2 pos, const char* text, float px, Im
 bool LoadPack(const char* dir);
 #endif
 
-// Logs how many sprites of each wanted set are known (F7).
+// Logs how many sprites of each wanted set are known (Ctrl+F8).
 void LogStatus();
 
-// F7 test: draws a few main menu sprites on screen.
+// Ctrl+F8 test: draws a few main menu sprites on screen.
 void SetTest(bool on);
 bool TestEnabled();
 void DrawTest();

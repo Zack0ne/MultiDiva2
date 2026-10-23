@@ -12,9 +12,9 @@ void Install();
 
 // Set every frame: true while this player is in a multiplayer round and the song is playing.
 void SetGuardActive(bool active);
-void SetForced(bool forced); // F7 debug: guard on outside multiplayer too, for testing alone
+void SetForced(bool forced); // Ctrl+F8 debug: guard on outside multiplayer too, for testing alone
 bool IsForced();
-bool GuardActive(); // in a multiplayer round (or the F7 test mode), song playing and not paused
+bool GuardActive(); // in a multiplayer round (or the Ctrl+F8 test mode), song playing and not paused
 
 enum class Hint { None, Blocked, TooSoon };
 

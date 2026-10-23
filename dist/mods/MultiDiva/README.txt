@@ -9,7 +9,7 @@ INSTALL
 PLAY
   F8  open MultiDiva2 (connect, room, chat)
   F9  hide everything MultiDiva2 shows
-  F7  debug panel
+  Ctrl+F8  debug panel
 
   To join a friend: paste the address they send you (wss://...) into "Server",
   then Connect. To host: "Host a server" at the bottom of the F8 window, then
@@ -18,3 +18,7 @@ PLAY
   Everyone ticks "Ready" and waits on the song select screen. The host starts
   any song as usual and it starts for everyone, at the same moment.
   Pick songs every player owns (same DLC / same song mods).
+
+BUG REPORTS
+  Open an issue on GitHub (github.com/lkat7/MultiDiva2) and attach
+  mods/MultiDiva/multidiva.log, plus multidiva.old.log if the game crashed.

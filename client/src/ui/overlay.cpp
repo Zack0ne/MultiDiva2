@@ -1,4 +1,5 @@
 #include "overlay.h"
+#include "bug_report.h"
 #include "debug_panel.h"
 #include "glyphs.h"
 #include "gpu_capture.h"
@@ -7,6 +8,7 @@
 #include "leaderboard.h"
 #include "multiplayer_ui.h"
 #include "pause_hint.h"
+#include "../core/crash.h"
 #include "../core/log.h"
 #include "../core/mod.h"
 #include "../game/launch.h"
@@ -28,7 +30,6 @@ static ID3D11DeviceContext* s_context = nullptr;
 static Fonts s_fonts;
 
 static bool s_debugPanelOpen = false;
-static bool s_f7WasDown = false;
 static bool s_lobbyOpen = false;
 // F9: hide every MultiDiva window (e.g. while someone watches). Networking keeps running.
 static bool s_hidden = false;
@@ -51,6 +52,9 @@ static bool IsKeyboardMessage(UINT msg)
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // The game may quit without unloading mods normally: its window going away counts as a normal exit.
+    if (msg == WM_DESTROY)
+        crash::MarkCleanExit();
     if (s_ready) {
         ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
         const ImGuiIO& io = ImGui::GetIO();
@@ -209,20 +213,21 @@ void OverlayInit(IDXGISwapChain* swapChain, ID3D11Device* device, ID3D11DeviceCo
     InstallInputBlock();
     capture::Install(s_context);
     s_ready = true;
-    Log("overlay ready (%ux%u). F8: multiplayer, F9: hide all, F7: debug panel.", desc.BufferDesc.Width, desc.BufferDesc.Height);
+    Log("overlay ready (%ux%u). F8: multiplayer, F9: hide all, Ctrl+F8: debug panel.", desc.BufferDesc.Width, desc.BufferDesc.Height);
 }
 
 static void PollHotkeys()
 {
+    // Ctrl+F8 for the debug panel: F7 is New Classics' chart style key.
     bool focused = GetForegroundWindow() == s_window;
-    bool f7Down = focused && RealKeyDown(VK_F7);
-    if (f7Down && !s_f7WasDown)
-        s_debugPanelOpen = !s_debugPanelOpen;
-    s_f7WasDown = f7Down;
-
+    bool ctrl = RealKeyDown(VK_CONTROL);
     bool f8Down = focused && RealKeyDown(VK_F8);
-    if (f8Down && !s_f8WasDown)
-        s_lobbyOpen = !s_lobbyOpen;
+    if (f8Down && !s_f8WasDown) {
+        if (ctrl)
+            s_debugPanelOpen = !s_debugPanelOpen;
+        else
+            s_lobbyOpen = !s_lobbyOpen;
+    }
     s_f8WasDown = f8Down;
 
     bool f9Down = focused && RealKeyDown(VK_F9);
@@ -238,7 +243,7 @@ void OverlayFrame(IDXGISwapChain* swapChain)
     if (!s_ready)
         return;
 
-    // Research capture (F7): the game's frame lies between our frames, so stop here and start after ours.
+    // Research capture (Ctrl+F8 panel): the game's frame lies between our frames, so stop here and start after ours.
     capture::OnOverlayFrameStart();
     struct CaptureEnd {
         ~CaptureEnd() { capture::OnOverlayFrameEnd(); }
@@ -296,6 +301,7 @@ void OverlayFrame(IDXGISwapChain* swapChain)
             sprites::DrawTest();
         if (s_debugPanelOpen)
             DrawDebugPanel(&s_debugPanelOpen);
+        DrawBugReport();
     }
     EndFrameEscape();
 

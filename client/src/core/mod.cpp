@@ -16,6 +16,29 @@ const std::wstring& ModDir()
     return dir;
 }
 
+const std::wstring& DataDir()
+{
+    static std::wstring dir = [] {
+        wchar_t base[MAX_PATH] = {};
+        DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH)
+            return ModDir();
+        std::wstring d = std::wstring(base) + L"\\MultiDiva2";
+        if (!CreateDirectoryW(d.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+            return ModDir();
+        return d;
+    }();
+    return dir;
+}
+
+std::wstring DataFile(const wchar_t* name)
+{
+    std::wstring path = DataDir() + L"\\" + name;
+    if (DataDir() != ModDir() && GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+        CopyFileW((ModDir() + L"\\" + name).c_str(), path.c_str(), TRUE);
+    return path;
+}
+
 std::string ModPathUtf8(const wchar_t* relative)
 {
     std::wstring full = ModDir() + L"\\" + relative;
