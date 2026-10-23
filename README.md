@@ -75,7 +75,9 @@ Protocol: [docs/protocol.md](docs/protocol.md). Game internals the mod relies on
   `client/src/core/helpers.h` is its helper header (MIT licence, notice in the file).
 - File formats and game structures were figured out with the help of public research projects:
   [MikuMikuLibrary](https://github.com/blueskythlikesclouds/MikuMikuLibrary) and
-  [ReDIVA](https://github.com/korenkonder/ReDIVA). No code from them is included.
+  [ReDIVA](https://github.com/korenkonder/ReDIVA). No code from them is included, apart from the colour conversion for
+  the game's YCbCr textures (the constants from MikuMikuLibrary's texture decoder, MIT licence), used by the shader
+  that draws song jackets.
 - **A correction about versions 2.1.0 and 2.1.1:** they still contained pieces carried over from the original
   MultiDiva without my knowing: a few game addresses, hook signatures and a score struct, which it had in turn taken
   from [ShareDiva](https://github.com/RocketRacer/MegaMixPlusShareDivaMod) by RocketRacer and from research by
