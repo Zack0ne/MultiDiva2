@@ -6,7 +6,8 @@ import "encoding/json"
 
 const (
 	ProtocolVersion = 1
-	LaunchBlockSize = 276 // stage entry [0x2C, 0x140), see docs/re-notes.md
+	ServerVersion   = "2.2.0" // release the server belongs to, shown in the client
+	LaunchBlockSize = 276     // stage entry [0x2C, 0x140), see docs/re-notes.md
 	MaxNameLen      = 24
 	MaxRoomLen      = 32
 	MaxPlayers      = 8 // per room
@@ -26,6 +27,10 @@ type HelloMsg struct {
 	Version int    `json:"version"`
 	Steam   string `json:"steam,omitempty"`  // 64-bit Steam ID as decimal text, for avatars
 	Avatar  string `json:"avatar,omitempty"` // base64 PNG/JPEG, for players without a Steam avatar
+	Resume  string `json:"resume,omitempty"` // WelcomeMsg.Token of a dropped connection: take its place in the room
+	// Resumable: this client reconnects and sends Resume, so its room slot is held after a dropped connection.
+	// Without it (older clients) a dropped player is removed at once, as before.
+	Resumable bool `json:"resumable,omitempty"`
 }
 
 type JoinMsg struct {
@@ -96,8 +101,10 @@ type RoomInfo struct {
 }
 
 type WelcomeMsg struct {
-	ID      int `json:"id"`
-	Version int `json:"version"`
+	ID      int    `json:"id"`
+	Version int    `json:"version"`
+	Token   string `json:"token,omitempty"`  // send as HelloMsg.Resume after a dropped connection
+	Server  string `json:"server,omitempty"` // server release, e.g. "2.2.0"
 }
 
 type PickInfo struct {
@@ -116,6 +123,7 @@ type PlayerInfo struct {
 	Steam   string `json:"steam,omitempty"`
 	Avatar  bool   `json:"avatar,omitempty"`  // GET /avatar/<id>
 	Missing bool   `json:"missing,omitempty"` // reported not having the song in focus (RoomMsg.Focus)
+	Away    bool   `json:"away,omitempty"`    // connection lost; the slot is held for a short while for a resume
 }
 
 type RoomMsg struct {

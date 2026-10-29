@@ -22,6 +22,7 @@ struct Player {
     uint64_t steamId = 0; // 0 = not on Steam (no avatar)
     bool hasAvatar = false; // custom avatar on the server (AvatarUrl), for players without a Steam one
     bool missing = false;   // reported not having the song in focus (State::focus)
+    bool away = false;      // lost their connection; the server holds their place for about a minute
 };
 
 struct Pick {
@@ -63,6 +64,7 @@ struct State {
     Conn conn = Conn::Offline;
     std::string connError;
     int myId = -1;
+    std::string serverVersion; // release of the server we're connected to ("" = an older server that doesn't say)
 
     bool inRoom = false;
     std::string roomName;
@@ -85,6 +87,7 @@ struct State {
     std::vector<RoomInfo> rooms; // the server's open rooms while we're connected but not in one
     std::string rejoinRoom; // the connection dropped while in this room (Rejoin() goes back)
     uint32_t connLostAt = 0; // GetTickCount() of the drop (the banner shows for a few seconds)
+    bool reconnecting = false; // the connection dropped in a room and we keep retrying with our session token
 };
 
 const State& Get();
