@@ -15,6 +15,7 @@ Join a room with friends, the host picks a song, and it starts for everyone at t
 - Warns when someone in the room doesn't have the song the host is looking at (custom song packs for example)
 - The host can hand over host or kick players (right-click a player)
 - Steam profile pictures
+- **Reconnecting:** if your connection drops (mobile data, wifi hiccup), the mod retries for about a minute and puts you back in your room and round with your score. Needs the 2.2.0 server and client
 - Pausing is blocked during a multiplayer round (press Esc twice to pause anyway), and alt-tab doesn't pause either
 - **Host a server** in one click: runs a small server on your PC with a free Cloudflare tunnel, so friends can join from anywhere without router setup
 - Miku Bot, a practice opponent for testing alone (if u dont have friends lol)
@@ -52,7 +53,6 @@ Things I'd like to add (no promises on when):
 - Results screen and round banners in the game's style
 - Restyled leaderboard cards
 - A Multiplayer entry in the main menu (edit: if that's even possible lol)
-- Rejoining a round that's already playing after a short disconnect (might add this next release since that happens a lot)
 - Room list scrolling for busy servers
 - Session scoreboard (round wins over the evening), 3-2-1 countdown
 - Team mode (2v2, summed scores, 2 players on the right, 2 on the left, maybe a tug-of-war with a crown just like osu!)
