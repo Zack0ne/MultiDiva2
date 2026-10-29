@@ -581,7 +581,8 @@ void Tick()
         if (status == net::WsClient::Status::Connected) {
             uint64_t steamId = steam::MySteamId();
             json hello = { { "name", GetConfig().name }, { "version", ProtocolVersion },
-                { "steam", steamId ? std::to_string(steamId) : "" } };
+                { "steam", steamId ? std::to_string(steamId) : "" },
+                { "resumable", true } }; // we reconnect with the token: the server may hold our slot after a drop
             if (s.reconnecting)
                 hello["resume"] = s_resumeToken;
             Send("hello", std::move(hello));

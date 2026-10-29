@@ -28,6 +28,9 @@ type HelloMsg struct {
 	Steam   string `json:"steam,omitempty"`  // 64-bit Steam ID as decimal text, for avatars
 	Avatar  string `json:"avatar,omitempty"` // base64 PNG/JPEG, for players without a Steam avatar
 	Resume  string `json:"resume,omitempty"` // WelcomeMsg.Token of a dropped connection: take its place in the room
+	// Resumable: this client reconnects and sends Resume, so its room slot is held after a dropped connection.
+	// Without it (older clients) a dropped player is removed at once, as before.
+	Resumable bool `json:"resumable,omitempty"`
 }
 
 type JoinMsg struct {

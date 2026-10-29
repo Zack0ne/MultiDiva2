@@ -154,9 +154,10 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 	h.leaveLobby(c)
 	// A connection that ends without a close frame (network drop, app killed) keeps the player's slot for a while
-	// so they can resume it; leaving on purpose (close frame) frees it at once.
+	// so a client that can resume gets it back; leaving on purpose (close frame), or a client that doesn't resume,
+	// frees it at once.
 	left := websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway
-	if !left && c.room != nil && c.room.Detach(c) {
+	if !left && c.resumable && c.room != nil && c.room.Detach(c) {
 		conn.CloseNow()
 		log.Printf("client %d (%s) lost connection, slot held for %s", c.id, c.name, h.grace())
 		return

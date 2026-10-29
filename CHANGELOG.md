@@ -19,7 +19,8 @@
 - Connections are pinged every 10 s and dropped if the peer doesn't answer, so a vanished client is noticed within
   about 20 s instead of whenever the operating system gives up.
 - A connection that ends without a close frame keeps the player's room slot for 60 s (shown as `away`), instead of
-  removing the player at once. Leaving on purpose still frees the slot immediately.
+  removing the player at once. Leaving on purpose still frees the slot immediately. Only clients that say they can
+  resume (`hello.resumable`) get this; older clients are still removed at once, so they never stall a round.
 - `welcome` carries a session `token` and the server release (`server`); `hello` accepts `resume`. These are
   additive: the protocol version stays 1, and older clients and servers keep working (older clients just can't resume).
 - A rejoin without a token (older client) replaces a dropped entry of the same name instead of becoming `Name (2)`.

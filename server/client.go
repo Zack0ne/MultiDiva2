@@ -37,6 +37,7 @@ type Client struct {
 	send       chan []byte
 	room       *Room
 	token      string      // identifies this session for a resume after a dropped connection
+	resumable  bool        // the client said it resumes (HelloMsg.Resumable)
 	superseded atomic.Bool // a newer connection took over this one's place
 }
 
@@ -191,6 +192,7 @@ func (c *Client) handle(env Envelope) {
 			c.name = name
 		}
 		c.baseName = name
+		c.resumable = m.Resumable
 		c.steam = ""
 		if isSteamID(m.Steam) {
 			c.steam = m.Steam

@@ -46,7 +46,7 @@ func connect(t *testing.T, url, name string) *testClient {
 // connectResume says hello with a resume token from an earlier connection ("" = a fresh player).
 func connectResume(t *testing.T, url, name, token string) *testClient {
 	t.Helper()
-	return connectHello(t, url, HelloMsg{Name: name, Version: ProtocolVersion, Resume: token})
+	return connectHello(t, url, HelloMsg{Name: name, Version: ProtocolVersion, Resume: token, Resumable: true})
 }
 
 func connectHello(t *testing.T, url string, hello HelloMsg) *testClient {
@@ -740,11 +740,11 @@ func avatarStatus(t *testing.T, url string, id int) int {
 func TestResumeFromLiveConnection(t *testing.T) {
 	url := startServer(t)
 	img := testAvatar(t)
-	old := connectHello(t, url, HelloMsg{Name: "Miku", Version: ProtocolVersion, Avatar: img})
+	old := connectHello(t, url, HelloMsg{Name: "Miku", Version: ProtocolVersion, Avatar: img, Resumable: true})
 	guest := connect(t, url, "Guest")
 	joinInOrder(old, guest, "r")
 
-	back := connectHello(t, url, HelloMsg{Name: "Miku", Version: ProtocolVersion, Avatar: img, Resume: old.token})
+	back := connectHello(t, url, HelloMsg{Name: "Miku", Version: ProtocolVersion, Avatar: img, Resume: old.token, Resumable: true})
 	if back.id != old.id || back.token != old.token {
 		t.Fatalf("resumed as id %d token %q, want %d %q", back.id, back.token, old.id, old.token)
 	}
@@ -832,5 +832,26 @@ func TestExpiryOfDroppedHost(t *testing.T) {
 			t.Fatal("room with only a dropped player was never closed")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A client that doesn't say it resumes (an older version) is removed as soon as its connection ends, not held.
+func TestNonResumableDropRemovedAtOnce(t *testing.T) {
+	url := startServer(t)
+	host := connectHello(t, url, HelloMsg{Name: "Old", Version: ProtocolVersion})
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+
+	host.conn.CloseNow()
+	r := guest.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	if r.Host != guest.id || r.Players[0].Away {
+		t.Fatalf("room = %+v", r)
+	}
+	// Rejoining under the same name is a plain join: no ghost, no "(2)".
+	back := connectHello(t, url, HelloMsg{Name: "Old", Version: ProtocolVersion})
+	back.send("join", JoinMsg{Room: "r"})
+	r = back.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 })
+	if r.Players[1].Name != "Old" {
+		t.Fatalf("room = %+v", r)
 	}
 }
