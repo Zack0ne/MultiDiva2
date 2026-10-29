@@ -26,6 +26,8 @@ type member struct {
 	result   *Result
 	havePV   int // last `have` report: song id and whether this player has it (-1 = none yet)
 	haveOK   bool
+	away     bool        // connection lost; the slot is held until `expiry` fires or the player resumes
+	expiry   *time.Timer // set while away
 }
 
 // Room holds one lobby. Every method takes the room lock; Client.Send never blocks,
@@ -118,7 +120,7 @@ func (r *Room) snapshot() RoomMsg {
 	}
 	for _, m := range r.members {
 		msg.Players = append(msg.Players, PlayerInfo{ID: m.c.id, Name: m.c.name, Ready: m.ready, Playing: m.playing,
-			Loaded: m.loaded, Steam: m.c.steam, Avatar: m.c.hasAvatar, Missing: m.lacks(focus)})
+			Loaded: m.loaded, Steam: m.c.steam, Avatar: m.c.hasAvatar, Missing: m.lacks(focus), Away: m.away})
 	}
 	return msg
 }
@@ -144,6 +146,15 @@ func (r *Room) Join(c *Client) {
 		c.SendError(fmt.Sprintf("room %q is full (%d players)", r.name, MaxPlayers))
 		r.hub.enterLobby(c) // back to the room list
 		return
+	}
+	// A same-name player whose connection dropped is most likely this one without a resume token (older client):
+	// free the name instead of numbering around them.
+	for _, m := range append([]*member(nil), r.members...) {
+		if m.away && strings.EqualFold(m.c.baseName, c.baseName) {
+			r.remove(m.c, "timed out")
+			r.hub.setAvatar(m.c.id, nil)
+			r.hub.dropSession(m.c)
+		}
 	}
 	c.name = r.uniqueName(c.baseName)
 	r.members = append(r.members, &member{c: c, havePV: -1})
@@ -176,6 +187,86 @@ func (r *Room) uniqueName(base string) string {
 	}
 }
 
+// Detach keeps c's slot for a resume after its connection dropped, and gives up the host role if it had it. It
+// reports false if c isn't a member (nothing to hold). After hub.resumeGrace the slot is freed as if c had left.
+func (r *Room) Detach(c *Client) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.find(c)
+	if m == nil || r.closed {
+		return false
+	}
+	m.away = true
+	log.Printf("room %q: %s lost connection (%d players)", r.name, c.name, len(r.members))
+	r.system("%s lost connection", c.name)
+	if r.host == c.id {
+		r.passHost(c)
+	}
+	m.expiry = time.AfterFunc(r.hub.grace(), func() { r.expire(m) })
+	r.broadcastState()
+	return true
+}
+
+// passHost gives the host role to the first connected member other than `from` (nobody if they are all away).
+func (r *Room) passHost(from *Client) {
+	for _, m := range r.members {
+		if m.c != from && !m.away {
+			r.host = m.c.id
+			r.hover = -1 // the new host's game reports its own highlight
+			r.system("%s is now the host", m.c.name)
+			return
+		}
+	}
+}
+
+// expire frees the slot of a player who didn't come back.
+func (r *Room) expire(m *member) {
+	r.mu.Lock()
+	if !m.away || r.find(m.c) != m {
+		r.mu.Unlock()
+		return // resumed, or already removed
+	}
+	c := m.c
+	removed := r.remove(c, "timed out")
+	empty := len(r.members) == 0
+	r.mu.Unlock()
+
+	r.hub.setAvatar(c.id, nil)
+	r.hub.dropSession(c)
+	if removed && empty {
+		r.hub.removeIfEmpty(r)
+	}
+}
+
+// Resume puts new connection c in the place of old, a member who dropped (or whose connection is half dead): same id
+// and name, round state kept. It sends c its welcome and the room. False if old isn't a member of this room.
+func (r *Room) Resume(old, c *Client) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.find(old)
+	if m == nil || r.closed {
+		return false
+	}
+	if m.expiry != nil {
+		m.expiry.Stop()
+		m.expiry = nil
+	}
+	m.away = false
+	m.c = c
+	c.id, c.name, c.baseName = old.id, old.name, old.baseName
+	old.superseded.Store(true)
+	go old.conn.CloseNow()
+
+	log.Printf("room %q: %s resumed (%d players)", r.name, c.name, len(r.members))
+	c.Send(encode("welcome", WelcomeMsg{ID: c.id, Version: ProtocolVersion, Token: old.token}))
+	r.system("%s reconnected", c.name)
+	r.broadcastState()
+	if r.state == StatePlaying && r.goSent && m.playing && !m.finished {
+		c.Send(encode("go", struct{}{})) // the barrier was released while they were away
+	}
+	return true
+}
+
 func (r *Room) Leave(c *Client) {
 	r.mu.Lock()
 	removed := r.remove(c, "left")
@@ -205,15 +296,19 @@ func (r *Room) remove(c *Client, how string) bool {
 	if idx < 0 {
 		return false
 	}
+	if e := r.members[idx].expiry; e != nil {
+		e.Stop()
+	}
 	r.members = append(r.members[:idx], r.members[idx+1:]...)
 	log.Printf("room %q: %s %s (%d players)", r.name, c.name, how, len(r.members))
 
 	if len(r.members) > 0 {
 		r.system("%s %s", c.name, how)
 		if r.host == c.id {
-			r.host = r.members[0].c.id
-			r.hover = -1 // the new host's game reports its own highlight
-			r.system("%s is now the host", r.members[0].c.name)
+			r.passHost(c)
+			if r.host == c.id { // everyone left is away: still better than a host who is gone
+				r.host = r.members[0].c.id
+			}
 		}
 		if r.state == StatePlaying {
 			r.checkAllLoaded()

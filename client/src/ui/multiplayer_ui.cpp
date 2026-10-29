@@ -868,7 +868,9 @@ static void DrawWaitingBanner(const mp::State& s)
 // The connection dropped while the screens weren't open (in a song, or F8 hidden): say so for a few seconds.
 static void DrawConnectionLost(const mp::State& s)
 {
-    if (!s.connLostAt || GetTickCount() - s.connLostAt > 8000 || s_screenFrame == ImGui::GetFrameCount())
+    if (s_screenFrame == ImGui::GetFrameCount())
+        return;
+    if (!s.reconnecting && (!s.connLostAt || GetTickCount() - s.connLostAt > 8000))
         return;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.16f), ImGuiCond_Always,
@@ -878,8 +880,11 @@ static void DrawConnectionLost(const mp::State& s)
         | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
     if (ImGui::Begin("##connlost", nullptr, flags)) {
         ImGui::TextColored(Bad, "Connection to the multiplayer server lost.");
-        ImGui::TextColored(Dim, g_session.inSong ? "The song goes on as a solo play. F8 after it to rejoin."
-                                                 : "Press F8 to rejoin.");
+        if (s.reconnecting)
+            ImGui::TextColored(Dim, "Reconnecting...");
+        else
+            ImGui::TextColored(Dim, g_session.inSong ? "The song goes on as a solo play. F8 after it to rejoin."
+                                                     : "Press F8 to rejoin.");
     }
     ImGui::End();
 }

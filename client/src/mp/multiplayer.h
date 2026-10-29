@@ -85,6 +85,7 @@ struct State {
     std::vector<RoomInfo> rooms; // the server's open rooms while we're connected but not in one
     std::string rejoinRoom; // the connection dropped while in this room (Rejoin() goes back)
     uint32_t connLostAt = 0; // GetTickCount() of the drop (the banner shows for a few seconds)
+    bool reconnecting = false; // the connection dropped in a room and we keep retrying with our session token
 };
 
 const State& Get();

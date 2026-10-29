@@ -33,7 +33,7 @@ lobby --(host start, everyone ready, song picked)--> playing --(everyone finishe
 
 | type | data | notes |
 |---|---|---|
-| `hello` | `{name, version, steam?, avatar?}` | first message; server answers `welcome`. `steam`: Steam ID (decimal) for the Steam avatar. `avatar`: base64 PNG/JPEG (max 32 KB, 256x256) for players without one |
+| `hello` | `{name, version, steam?, avatar?, resume?}` | first message; server answers `welcome`. `steam`: Steam ID (decimal) for the Steam avatar. `avatar`: base64 PNG/JPEG (max 32 KB, 256x256) for players without one. `resume`: the `token` of a connection that dropped; if the server still holds that player's room slot, this connection takes it over (see below) |
 | `join` | `{room}` | joins or creates the room (name 1-32 chars) |
 | `leave` | `{}` | back to no room |
 | `chat` | `{text}` | max 300 chars |
@@ -53,7 +53,7 @@ lobby --(host start, everyone ready, song picked)--> playing --(everyone finishe
 
 | type | data | notes |
 |---|---|---|
-| `welcome` | `{id, version}` | your player id |
+| `welcome` | `{id, version, token}` | your player id, and the session token to send as `hello.resume` after a dropped connection. After a resume the id is the old one |
 | `room` | room state, see below | sent on every change |
 | `chat` | `{from, name, text, system}` | `system` = server notices (joins, host changes) |
 | `start` | `{block, pv, difficulty, edition, title}` | auto-start now |
@@ -75,4 +75,8 @@ Room state:
 }
 ```
 
-`pick` is `null` until the host picks. `playing` = in the current round. `hover` / `hoverTitle`: the host's highlighted song (`-1` = none). `focus`: the song players report on with `have` (the hovered one in the lobby, else the pick); players who reported not having it carry `missing: true`. Names are unique per room (case-insensitive): a repeat is shown as `Name (2)`, `Name (3)`. Players may also carry `steam` (Steam ID) and `avatar: true` (custom avatar at `GET /avatar/<id>`, same host as `/ws`).
+`pick` is `null` until the host picks. `playing` = in the current round. `hover` / `hoverTitle`: the host's highlighted song (`-1` = none). `focus`: the song players report on with `have` (the hovered one in the lobby, else the pick); players who reported not having it carry `missing: true`. Names are unique per room (case-insensitive): a repeat is shown as `Name (2)`, `Name (3)`. Players whose connection dropped carry `away: true` while their slot is held. Players may also carry `steam` (Steam ID) and `avatar: true` (custom avatar at `GET /avatar/<id>`, same host as `/ws`).
+
+## Dropped connections and resuming
+
+The server pings every connection at the WebSocket level (every 10 s, 10 s to answer); a peer that doesn't answer is dropped. A connection that ends without a close frame (network loss, killed app) doesn't remove the player at once: their room slot is held for 60 s as `away`, the host role passes to the next connected player, and a round goes on with their score and state kept. Sending `hello` with `resume` set to the `token` from their earlier `welcome` gives the new connection that slot (same `id`, name and round state); the server sends `welcome`, the current `room`, and `go` again if the loading barrier was released meanwhile. After the grace period, or if the player left with a close frame, the slot is freed as for a normal leave and `resume` is ignored (the `hello` is handled as a fresh one). A `join` without a token while an `away` player of the same name is in the room replaces that entry instead of getting a `Name (2)`.

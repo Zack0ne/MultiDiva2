@@ -20,19 +20,31 @@ import (
 )
 
 type testClient struct {
-	t    *testing.T
-	conn *websocket.Conn
-	id   int
+	t     *testing.T
+	conn  *websocket.Conn
+	id    int
+	token string
 }
 
 func startServer(t *testing.T) string {
+	url, _ := startServerHub(t)
+	return url
+}
+
+func startServerHub(t *testing.T) (string, *Hub) {
 	hub := NewHub(20*time.Millisecond, 300*time.Millisecond)
 	srv := httptest.NewServer(httpHandler(hub))
 	t.Cleanup(srv.Close)
-	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws", hub
 }
 
 func connect(t *testing.T, url, name string) *testClient {
+	t.Helper()
+	return connectResume(t, url, name, "")
+}
+
+// connectResume says hello with a resume token from an earlier connection ("" = a fresh player).
+func connectResume(t *testing.T, url, name, token string) *testClient {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -42,10 +54,10 @@ func connect(t *testing.T, url, name string) *testClient {
 	}
 	t.Cleanup(func() { conn.CloseNow() })
 	c := &testClient{t: t, conn: conn}
-	c.send("hello", HelloMsg{Name: name, Version: ProtocolVersion})
+	c.send("hello", HelloMsg{Name: name, Version: ProtocolVersion, Resume: token})
 	var w WelcomeMsg
 	c.expect("welcome", &w)
-	c.id = w.ID
+	c.id, c.token = w.ID, w.Token
 	return c
 }
 
@@ -582,4 +594,117 @@ func TestRoomFull(t *testing.T) {
 	players[0].send("leave", nil)
 	late.send("join", JoinMsg{Room: "full"})
 	late.expectRoom(func(r RoomMsg) bool { return len(r.Players) == MaxPlayers })
+}
+
+// roundOf starts a round for a fresh host and guest, returning the server URL as well.
+func roundOf(t *testing.T) (url string, hub *Hub, host, guest *testClient) {
+	url, hub = startServerHub(t)
+	host = connect(t, url, "Host")
+	guest = connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+	guest.send("ready", ReadyMsg{Ready: true})
+	host.expectRoom(func(r RoomMsg) bool { return r.Players[1].Ready })
+	host.send("start", validPick(54))
+	guest.expect("start", nil)
+	host.expect("start", nil)
+	return url, hub, host, guest
+}
+
+// A dropped connection (no close frame) keeps the player's slot: the host role passes on, the round goes on, and
+// the same player resumes with their token: same id and name (no "(2)"), score kept.
+func TestResumeMidRound(t *testing.T) {
+	url, _, host, guest := roundOf(t)
+	host.send("score", Score{Score: 1234})
+	oldID := host.id
+
+	host.conn.CloseNow() // vanishes without leaving
+	r := guest.expectRoom(func(r RoomMsg) bool { return r.Players[0].Away })
+	if r.Host != guest.id || len(r.Players) != 2 {
+		t.Fatalf("after drop: %+v", r)
+	}
+
+	back := connectResume(t, url, "Host", host.token)
+	if back.id != oldID || back.token != host.token {
+		t.Fatalf("resumed as id %d token %q, want id %d token %q", back.id, back.token, oldID, host.token)
+	}
+	r = guest.expectRoom(func(r RoomMsg) bool { return !r.Players[0].Away })
+	if len(r.Players) != 2 || r.Players[0].Name != "Host" || r.Host != guest.id {
+		t.Fatalf("after resume: %+v", r)
+	}
+
+	// Both finishing ends the round with both results (the resumed player's slot was never lost).
+	guest.send("finish", FinishMsg{Result: Result{Score: Score{Score: 1}}})
+	back.send("finish", FinishMsg{Result: Result{Score: Score{Score: 2}}})
+	var res ResultsMsg
+	back.expect("results", &res)
+	if len(res.Players) != 2 || res.Players[0].ID != oldID {
+		t.Fatalf("results = %+v", res)
+	}
+}
+
+// A player who doesn't come back within the grace period is removed, which lets the round end without them.
+func TestDroppedPlayerExpires(t *testing.T) {
+	_, hub, host, guest := roundOf(t)
+	hub.smu.Lock()
+	hub.resumeGrace = 100 * time.Millisecond
+	hub.smu.Unlock()
+	host.conn.CloseNow()
+	guest.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+
+	guest.send("finish", FinishMsg{Result: Result{Score: Score{Score: 1}}})
+	var res ResultsMsg
+	guest.expect("results", &res)
+	if len(res.Players) != 1 {
+		t.Fatalf("results = %+v", res)
+	}
+}
+
+// An older client rejoins without a token: the dropped entry of the same name is replaced, not numbered around.
+func TestRejoinWithoutTokenFreesName(t *testing.T) {
+	url := startServer(t)
+	host := connect(t, url, "Miku")
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+
+	host.conn.CloseNow()
+	guest.expectRoom(func(r RoomMsg) bool { return r.Players[0].Away })
+
+	back := connect(t, url, "Miku")
+	back.send("join", JoinMsg{Room: "r"})
+	r := back.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 2 && r.Players[0].Name == "Guest" })
+	if r.Players[1].Name != "Miku" || r.Players[1].Away {
+		t.Fatalf("room = %+v", r)
+	}
+	if r.Host != guest.id {
+		t.Fatalf("host = %d, want the guest %d", r.Host, guest.id)
+	}
+}
+
+// Leaving on purpose (close frame) frees the slot at once; only a silent drop is held for a resume.
+func TestCleanCloseLeavesAtOnce(t *testing.T) {
+	url := startServer(t)
+	host := connect(t, url, "Host")
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+	host.conn.Close(websocket.StatusNormalClosure, "")
+	guest.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	if back := connectResume(t, url, "Host", host.token); back.token == host.token {
+		t.Fatal("a player who left resumed their old session")
+	}
+}
+
+// A peer that stops answering pings is dropped (a half-open connection never reports an error by itself).
+func TestSilentPeerDropped(t *testing.T) {
+	url, hub := startServerHub(t)
+	hub.smu.Lock()
+	hub.probeEvery, hub.probeWait = 50*time.Millisecond, 100*time.Millisecond
+	hub.smu.Unlock()
+	host := connect(t, url, "Host")
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+	// host never reads again, so its library never answers the server's pings; guest keeps reading.
+	r := guest.expectRoom(func(r RoomMsg) bool { return r.Players[0].Away })
+	if r.Host != guest.id {
+		t.Fatalf("host not passed on: %+v", r)
+	}
 }

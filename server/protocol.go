@@ -26,6 +26,7 @@ type HelloMsg struct {
 	Version int    `json:"version"`
 	Steam   string `json:"steam,omitempty"`  // 64-bit Steam ID as decimal text, for avatars
 	Avatar  string `json:"avatar,omitempty"` // base64 PNG/JPEG, for players without a Steam avatar
+	Resume  string `json:"resume,omitempty"` // WelcomeMsg.Token of a dropped connection: take its place in the room
 }
 
 type JoinMsg struct {
@@ -96,8 +97,9 @@ type RoomInfo struct {
 }
 
 type WelcomeMsg struct {
-	ID      int `json:"id"`
-	Version int `json:"version"`
+	ID      int    `json:"id"`
+	Version int    `json:"version"`
+	Token   string `json:"token,omitempty"` // send as HelloMsg.Resume after a dropped connection
 }
 
 type PickInfo struct {
@@ -116,6 +118,7 @@ type PlayerInfo struct {
 	Steam   string `json:"steam,omitempty"`
 	Avatar  bool   `json:"avatar,omitempty"`  // GET /avatar/<id>
 	Missing bool   `json:"missing,omitempty"` // reported not having the song in focus (RoomMsg.Focus)
+	Away    bool   `json:"away,omitempty"`    // connection lost; the slot is held for a short while for a resume
 }
 
 type RoomMsg struct {

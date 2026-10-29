@@ -12,6 +12,7 @@
 #include "../net/host.h"
 #include "../net/ws_client.h"
 
+#include <algorithm>
 #include <cstring>
 #include <windows.h>
 #include <nlohmann/json.hpp>
@@ -83,6 +84,9 @@ static void AddChat(ChatLine::Kind kind, std::string name, std::string text)
 
 static void Send(const char* type, json data = json::object())
 {
+    // While reconnecting the socket is dead or not yet greeted: anything but the hello would be lost or refused.
+    if (s.reconnecting && strcmp(type, "hello") != 0)
+        return;
     s_ws.Send(json{ { "type", type }, { "data", std::move(data) } }.dump());
 }
 
@@ -150,6 +154,15 @@ static std::string NormalizeWss(std::string url)
 // Room to join as soon as the server says welcome ("" = stay in the lobby and show its room list).
 static std::string s_joinOnWelcome;
 
+// A dropped connection in a room is retried for a while: the token from `welcome` lets the new connection take over
+// our old place (id, score, round) as long as the server still holds it (it waits about a minute).
+static std::string s_resumeToken;
+static DWORD s_reconnectUntil = 0;
+static DWORD s_nextAttempt = 0;
+static int s_attempts = 0;
+static json s_finishResult; // what we reported at the end of the round, to report again if the drop lost it
+constexpr DWORD ReconnectWindowMs = 55000;
+
 void HostAndConnect() { HostAndConnect(GetConfig().room); }
 
 void HostAndConnect(const std::string& joinRoom)
@@ -194,6 +207,7 @@ static void ConnectTo(const std::string& server, int port)
     const Config& cfg = GetConfig();
     s_lastServer = server;
     s_lastPort = port;
+    s_resumeToken.clear(); // a connection chosen by the player starts a new session
     Endpoint ep = ParseServer(server, port);
     s_endpoint = ep;
     s = State{};
@@ -380,7 +394,30 @@ static void Handle(const std::string& raw)
     const json& d = msg.contains("data") && msg["data"].is_object() ? msg["data"] : json::object();
 
     if (type == "welcome") {
-        s.myId = d.value("id", -1);
+        int id = d.value("id", -1);
+        s_resumeToken = d.value("token", "");
+        if (s.reconnecting) {
+            s.reconnecting = false;
+            s.connLostAt = 0;
+            if (id == s.myId) {
+                Log("mp: reconnected, resumed as player %d", id);
+                AddChat(ChatLine::System, "", "Reconnected.");
+                // Things we said while the socket was dead are gone; the server ignores repeats.
+                if (s_finishSent && s.inRound && !s_finishResult.is_null())
+                    Send("finish", { { "result", s_finishResult } });
+                if (s_loadedSent && !s_goReceived)
+                    Send("loaded");
+                return;
+            }
+            // The server no longer holds our place (too long, or it restarted): back into the room as a new player.
+            Log("mp: reconnected as a new player %d, rejoining %s", id, s.roomName.c_str());
+            std::string room = s.roomName;
+            s.myId = id;
+            ClearRoom();
+            JoinRoom(room);
+            return;
+        }
+        s.myId = id;
         s.conn = Conn::Online;
         Log("mp: online as player %d", s.myId);
         if (!s_joinOnWelcome.empty())
@@ -461,6 +498,7 @@ static void SendFinish(bool fromResultScreen)
         result["maxCombo"] = 0;
         result["failed"] = true;
     }
+    s_finishResult = result;
     Send("finish", { { "result", result } });
     Log("mp: finish sent (%s)", fromResultScreen ? "result screen" : "quit");
 }
@@ -529,25 +567,49 @@ void Tick()
     // Connection status changes. A connect that fails within a frame goes Disconnected -> Connecting ->
     // Disconnected between two ticks, so a disconnected socket while we think we're connecting counts too.
     net::WsClient::Status status = s_ws.GetStatus();
+    if (s.reconnecting && status == net::WsClient::Status::Disconnected && s_lastStatus == status
+        && (int)(GetTickCount() - s_nextAttempt) >= 0) {
+        Log("mp: reconnecting (attempt %d)", s_attempts + 1);
+        s_ws.Connect(Widen(s_endpoint.host), (uint16_t)s_endpoint.port, Widen(s_endpoint.path), s_endpoint.secure);
+        s_lastStatus = net::WsClient::Status::Connecting;
+        status = s_ws.GetStatus();
+    }
     if (status == net::WsClient::Status::Disconnected && s.conn == Conn::Connecting)
         s_lastStatus = net::WsClient::Status::Connecting;
     if (status != s_lastStatus) {
         if (status == net::WsClient::Status::Connected) {
             uint64_t steamId = steam::MySteamId();
-            Send("hello", { { "name", GetConfig().name }, { "version", ProtocolVersion },
-                { "steam", steamId ? std::to_string(steamId) : "" } });
+            json hello = { { "name", GetConfig().name }, { "version", ProtocolVersion },
+                { "steam", steamId ? std::to_string(steamId) : "" } };
+            if (s.reconnecting)
+                hello["resume"] = s_resumeToken;
+            Send("hello", std::move(hello));
         } else if (status == net::WsClient::Status::Disconnected && s.conn != Conn::Offline) {
             std::string err = s_ws.LastError();
             bool wasOnline = s.conn == Conn::Online;
             std::string room = s.inRoom ? s.roomName : std::string();
             Log("mp: disconnected (%s)", err.empty() ? "closed" : err.c_str());
-            s = State{};
-            if (wasOnline) {
-                s.connError = "Connection to the server was lost.";
-                s.rejoinRoom = room;
-                s.connLostAt = GetTickCount();
+            DWORD now = GetTickCount();
+            if (s.reconnecting && (int)(s_reconnectUntil - now) > 0) {
+                s_nextAttempt = now + std::min<DWORD>(1000u << std::min(s_attempts++, 3), 8000); // 1, 2, 4, 8, 8... s
+            } else if (!s.reconnecting && wasOnline && s.inRoom && !s_resumeToken.empty()) {
+                // Keep the room and the round as they are and try to get our place back.
+                s.reconnecting = true;
+                s.connLostAt = now;
+                s_reconnectUntil = now + ReconnectWindowMs;
+                s_attempts = 0;
+                s_nextAttempt = now + 1000;
+                AddChat(ChatLine::System, "", "Connection lost, reconnecting...");
             } else {
-                s.connError = "Couldn't reach the server. Check the address, or ask the host if their server is running.";
+                s_resumeToken.clear();
+                s = State{};
+                if (wasOnline) {
+                    s.connError = "Connection to the server was lost.";
+                    s.rejoinRoom = room;
+                    s.connLostAt = GetTickCount();
+                } else {
+                    s.connError = "Couldn't reach the server. Check the address, or ask the host if their server is running.";
+                }
             }
         }
         s_lastStatus = status;
