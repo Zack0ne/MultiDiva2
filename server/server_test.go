@@ -58,6 +58,9 @@ func connectResume(t *testing.T, url, name, token string) *testClient {
 	var w WelcomeMsg
 	c.expect("welcome", &w)
 	c.id, c.token = w.ID, w.Token
+	if w.Server != ServerVersion {
+		t.Fatalf("welcome server version = %q, want %q", w.Server, ServerVersion)
+	}
 	return c
 }
 

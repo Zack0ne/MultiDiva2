@@ -207,7 +207,7 @@ func (c *Client) handle(env Envelope) {
 		if resumed {
 			return // the welcome and the room went out with the takeover
 		}
-		c.Send(encode("welcome", WelcomeMsg{ID: c.id, Version: ProtocolVersion, Token: c.token}))
+		c.Send(encode("welcome", WelcomeMsg{ID: c.id, Version: ProtocolVersion, Token: c.token, Server: ServerVersion}))
 		if c.room == nil {
 			c.hub.enterLobby(c)
 		}

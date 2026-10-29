@@ -53,7 +53,7 @@ lobby --(host start, everyone ready, song picked)--> playing --(everyone finishe
 
 | type | data | notes |
 |---|---|---|
-| `welcome` | `{id, version, token}` | your player id, and the session token to send as `hello.resume` after a dropped connection. After a resume the id is the old one |
+| `welcome` | `{id, version, token, server}` | your player id, the server release (`server`, e.g. `2.2.0`, shown in the client), and the session token to send as `hello.resume` after a dropped connection. After a resume the id is the old one |
 | `room` | room state, see below | sent on every change |
 | `chat` | `{from, name, text, system}` | `system` = server notices (joins, host changes) |
 | `start` | `{block, pv, difficulty, edition, title}` | auto-start now |

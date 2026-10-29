@@ -258,7 +258,7 @@ func (r *Room) Resume(old, c *Client) bool {
 	go old.conn.CloseNow()
 
 	log.Printf("room %q: %s resumed (%d players)", r.name, c.name, len(r.members))
-	c.Send(encode("welcome", WelcomeMsg{ID: c.id, Version: ProtocolVersion, Token: old.token}))
+	c.Send(encode("welcome", WelcomeMsg{ID: c.id, Version: ProtocolVersion, Token: old.token, Server: ServerVersion}))
 	r.system("%s reconnected", c.name)
 	r.broadcastState()
 	if r.state == StatePlaying && r.goSent && m.playing && !m.finished {

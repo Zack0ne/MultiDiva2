@@ -63,6 +63,7 @@ struct State {
     Conn conn = Conn::Offline;
     std::string connError;
     int myId = -1;
+    std::string serverVersion; // release of the server we're connected to ("" = an older server that doesn't say)
 
     bool inRoom = false;
     std::string roomName;

@@ -6,7 +6,8 @@ import "encoding/json"
 
 const (
 	ProtocolVersion = 1
-	LaunchBlockSize = 276 // stage entry [0x2C, 0x140), see docs/re-notes.md
+	ServerVersion   = "2.2.0" // release the server belongs to, shown in the client
+	LaunchBlockSize = 276     // stage entry [0x2C, 0x140), see docs/re-notes.md
 	MaxNameLen      = 24
 	MaxRoomLen      = 32
 	MaxPlayers      = 8 // per room
@@ -99,7 +100,8 @@ type RoomInfo struct {
 type WelcomeMsg struct {
 	ID      int    `json:"id"`
 	Version int    `json:"version"`
-	Token   string `json:"token,omitempty"` // send as HelloMsg.Resume after a dropped connection
+	Token   string `json:"token,omitempty"`  // send as HelloMsg.Resume after a dropped connection
+	Server  string `json:"server,omitempty"` // server release, e.g. "2.2.0"
 }
 
 type PickInfo struct {

@@ -8,6 +8,7 @@
 #include "room_scene.h"
 #include "overlay.h"
 #include "../core/config.h"
+#include "../core/version.h"
 #include "../game/launch.h"
 #include "../game/memory.h"
 #include "../game/pause_guard.h"
@@ -715,6 +716,8 @@ void DrawLobby(bool* open)
         DrawConnect(s);
     } else if (!s.inRoom) {
         ImGui::Text("Connected as %s", GetConfig().name.c_str());
+        ImGui::TextColored(Dim, "Client %s   Server %s", MULTIDIVA_VERSION,
+            s.serverVersion.empty() ? "unknown (older)" : s.serverVersion.c_str());
         if (!s.roomNotice.empty())
             ImGui::TextColored(Bad, "%s", s.roomNotice.c_str());
         Config& cfg = GetConfig();

@@ -2,6 +2,7 @@
 #include "avatars.h"
 #include "game_sprites.h"
 #include "overlay.h"
+#include "../core/version.h"
 #include "../game/titles.h"
 
 #include <algorithm>
@@ -838,6 +839,14 @@ ConnectAction DrawConnectScene(const mp::State& s, ConnectView& v)
         std::string state = online ? "Connected to  " + v.serverShown : connecting ? "Connecting..." : "Not connected";
         st.color = online ? IM_COL32(150, 240, 230, 255) : IM_COL32(220, 225, 235, 255);
         Text(c, 1880 - TextW(st, state.c_str()), 40, state.c_str(), st);
+
+        // Both releases, so a mismatch is easy to spot when something doesn't work.
+        std::string ver = std::string("Client ") + MULTIDIVA_VERSION;
+        if (online)
+            ver += "   Server " + (s.serverVersion.empty() ? std::string("unknown (older)") : s.serverVersion);
+        st.px = 24;
+        st.color = IM_COL32(190, 198, 212, 255);
+        Text(c, 1880 - TextW(st, ver.c_str()), 86, ver.c_str(), st);
     }
 
     const float top = 170, cardH = 640;

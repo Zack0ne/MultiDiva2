@@ -15,7 +15,7 @@ func main() {
 	loadTimeout := flag.Duration("load-timeout", 30*time.Second, "max wait on the loading screen for slow players")
 	flag.Parse()
 
-	log.Printf("MultiDiva server (protocol v%d) listening on %s", ProtocolVersion, *addr)
+	log.Printf("MultiDiva server %s (protocol v%d) listening on %s", ServerVersion, ProtocolVersion, *addr)
 	log.Fatal(http.ListenAndServe(*addr, httpHandler(NewHub(*tick, *loadTimeout))))
 }
 

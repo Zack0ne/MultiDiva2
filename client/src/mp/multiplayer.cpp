@@ -396,6 +396,7 @@ static void Handle(const std::string& raw)
     if (type == "welcome") {
         int id = d.value("id", -1);
         s_resumeToken = d.value("token", "");
+        s.serverVersion = d.value("server", "");
         if (s.reconnecting) {
             s.reconnecting = false;
             s.connLostAt = 0;
