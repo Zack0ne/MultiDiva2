@@ -46,6 +46,11 @@ func connect(t *testing.T, url, name string) *testClient {
 // connectResume says hello with a resume token from an earlier connection ("" = a fresh player).
 func connectResume(t *testing.T, url, name, token string) *testClient {
 	t.Helper()
+	return connectHello(t, url, HelloMsg{Name: name, Version: ProtocolVersion, Resume: token})
+}
+
+func connectHello(t *testing.T, url string, hello HelloMsg) *testClient {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, url, nil)
@@ -54,7 +59,7 @@ func connectResume(t *testing.T, url, name, token string) *testClient {
 	}
 	t.Cleanup(func() { conn.CloseNow() })
 	c := &testClient{t: t, conn: conn}
-	c.send("hello", HelloMsg{Name: name, Version: ProtocolVersion, Resume: token})
+	c.send("hello", hello)
 	var w WelcomeMsg
 	c.expect("welcome", &w)
 	c.id, c.token = w.ID, w.Token
@@ -709,5 +714,123 @@ func TestSilentPeerDropped(t *testing.T) {
 	r := guest.expectRoom(func(r RoomMsg) bool { return r.Players[0].Away })
 	if r.Host != guest.id {
 		t.Fatalf("host not passed on: %+v", r)
+	}
+}
+
+func testAvatar(t *testing.T) string {
+	var buf bytes.Buffer
+	png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func avatarStatus(t *testing.T, url string, id int) int {
+	t.Helper()
+	base := "http" + strings.TrimSuffix(strings.TrimPrefix(url, "ws"), "/ws")
+	resp, err := http.Get(base + "/avatar/" + strconv.Itoa(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// The old connection is still open (a half-dead socket the server hasn't noticed) when the player comes back with
+// their token: the new connection takes over the same id and slot, stays host, and the old one closing afterwards
+// must neither remove the new member nor wipe its avatar.
+func TestResumeFromLiveConnection(t *testing.T) {
+	url := startServer(t)
+	img := testAvatar(t)
+	old := connectHello(t, url, HelloMsg{Name: "Miku", Version: ProtocolVersion, Avatar: img})
+	guest := connect(t, url, "Guest")
+	joinInOrder(old, guest, "r")
+
+	back := connectHello(t, url, HelloMsg{Name: "Miku", Version: ProtocolVersion, Avatar: img, Resume: old.token})
+	if back.id != old.id || back.token != old.token {
+		t.Fatalf("resumed as id %d token %q, want %d %q", back.id, back.token, old.id, old.token)
+	}
+
+	// The superseded connection is closed by the server.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for {
+		if _, _, err := old.conn.Read(ctx); err != nil {
+			if ctx.Err() != nil {
+				t.Fatal("old connection was not closed")
+			}
+			break
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // its server-side cleanup runs after the close
+
+	guest.send("ready", ReadyMsg{Ready: true}) // forces a fresh room update
+	r := guest.expectRoom(func(r RoomMsg) bool {
+		return len(r.Players) > 0 && r.Players[0].Ready || len(r.Players) > 1 && r.Players[1].Ready
+	})
+	if len(r.Players) != 2 || r.Players[0].Name != "Miku" || r.Players[0].Away || r.Host != back.id {
+		t.Fatalf("room after takeover: %+v", r)
+	}
+	if got := avatarStatus(t, url, back.id); got != 200 {
+		t.Fatalf("avatar of the resumed player: status %d, want 200", got)
+	}
+}
+
+// A player who was away while the loading barrier was released gets the `go` they missed.
+func TestResumeGetsMissedGo(t *testing.T) {
+	url, _, host, guest := roundOf(t)
+	guest.conn.CloseNow() // drops before loading
+	host.expectRoom(func(r RoomMsg) bool { return r.Players[1].Away })
+	host.send("loaded", nil)
+	host.expect("go", nil) // released by the load timeout, without the absent guest
+
+	back := connectResume(t, url, "Guest", guest.token)
+	back.expect("go", nil)
+}
+
+// A token the server doesn't know (expired, or from before a restart) is just a fresh hello.
+func TestUnknownResumeTokenIsFresh(t *testing.T) {
+	url := startServer(t)
+	c := connectResume(t, url, "Miku", "00000000000000000000000000000000")
+	if c.token == "" || c.token == "00000000000000000000000000000000" {
+		t.Fatalf("token = %q", c.token)
+	}
+	c.send("join", JoinMsg{Room: "r"})
+	r := c.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	if r.Host != c.id || r.Players[0].Name != "Miku" {
+		t.Fatalf("room = %+v", r)
+	}
+}
+
+// A dropped host's slot expiring leaves the room to the others; a room whose only player drops is closed.
+func TestExpiryOfDroppedHost(t *testing.T) {
+	url, hub := startServerHub(t)
+	hub.smu.Lock()
+	hub.resumeGrace = 100 * time.Millisecond
+	hub.smu.Unlock()
+
+	host := connect(t, url, "Host")
+	guest := connect(t, url, "Guest")
+	joinInOrder(host, guest, "r")
+	host.conn.CloseNow()
+	r := guest.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	if r.Host != guest.id || r.Players[0].Name != "Guest" {
+		t.Fatalf("room = %+v", r)
+	}
+
+	solo := connect(t, url, "Solo")
+	solo.send("join", JoinMsg{Room: "solo"})
+	solo.expectRoom(func(r RoomMsg) bool { return len(r.Players) == 1 })
+	solo.conn.CloseNow()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		hub.mu.Lock()
+		_, open := hub.rooms["solo"]
+		hub.mu.Unlock()
+		if !open {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("room with only a dropped player was never closed")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
