@@ -12,6 +12,8 @@
   time you keep your place: same player id, score and round, even mid-song. The host role passes to another player
   while you're gone and isn't handed back. If the server no longer holds your place, you rejoin the room as a new
   player.
+- Players whose connection dropped show as "Reconnecting..." in the player list (greyed bar in the full-screen room),
+  and your own window says so while the mod tries to get you back.
 - The client shows its own version and the server's in the multiplayer window ("Client 2.2.0   Server 2.2.0"), so a
   version mismatch is easy to spot. An older server that doesn't report one shows as "unknown (older)".
 

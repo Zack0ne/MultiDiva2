@@ -291,7 +291,7 @@ static void OnRoom(const json& d)
     for (const json& p : d.value("players", json::array()))
         s.players.push_back({ p.value("id", 0), p.value("name", ""), p.value("ready", false), p.value("playing", false),
             p.value("loaded", false), strtoull(p.value("steam", "").c_str(), nullptr, 10), p.value("avatar", false),
-            p.value("missing", false) });
+            p.value("missing", false), p.value("away", false) });
     s.pick.reset();
     if (d.contains("pick") && d["pick"].is_object()) {
         const json& p = d["pick"];

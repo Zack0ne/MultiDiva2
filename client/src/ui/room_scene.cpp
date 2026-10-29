@@ -142,6 +142,8 @@ Hit HitTest(const Ctx& c, int key, float x, float y, float w, float h)
 // red; not ready stays grey. Drawn from the star-less grey bar, recolored (the stars made rows look like songs).
 ImU32 BarColor(const mp::State& s, const mp::Player& p)
 {
+    if (p.away)
+        return IM_COL32(90, 94, 104, 255);
     if (p.missing)
         return IM_COL32(218, 0, 30, 255);
     if (p.playing)
@@ -165,6 +167,8 @@ void Bar(const Ctx& c, ImU32 color, bool sel, float x, float y, float scale, flo
 
 const char* StatusText(const mp::State& s, const mp::Player& p)
 {
+    if (p.away)
+        return "Reconnecting...";
     if (p.missing)
         return "No song";
     if (p.playing)
@@ -836,8 +840,10 @@ ConnectAction DrawConnectScene(const mp::State& s, ConnectView& v)
         st.font = Font::Thin;
         st.px = 30;
         st.spacing = 1;
-        std::string state = online ? "Connected to  " + v.serverShown : connecting ? "Connecting..." : "Not connected";
-        st.color = online ? IM_COL32(150, 240, 230, 255) : IM_COL32(220, 225, 235, 255);
+        std::string state = s.reconnecting ? "Connection lost, reconnecting..."
+            : online ? "Connected to  " + v.serverShown : connecting ? "Connecting..." : "Not connected";
+        st.color = s.reconnecting ? IM_COL32(255, 190, 90, 255)
+            : online ? IM_COL32(150, 240, 230, 255) : IM_COL32(220, 225, 235, 255);
         Text(c, 1880 - TextW(st, state.c_str()), 40, state.c_str(), st);
 
         // Both releases, so a mismatch is easy to spot when something doesn't work.

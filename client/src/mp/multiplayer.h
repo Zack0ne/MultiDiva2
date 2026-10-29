@@ -22,6 +22,7 @@ struct Player {
     uint64_t steamId = 0; // 0 = not on Steam (no avatar)
     bool hasAvatar = false; // custom avatar on the server (AvatarUrl), for players without a Steam one
     bool missing = false;   // reported not having the song in focus (State::focus)
+    bool away = false;      // lost their connection; the server holds their place for about a minute
 };
 
 struct Pick {

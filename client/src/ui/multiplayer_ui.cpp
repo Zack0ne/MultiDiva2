@@ -278,7 +278,9 @@ static void DrawPlayers(const mp::State& s)
             ImGui::TextColored(Gold, "host");
         ImGui::TableSetColumnIndex(2);
         ImGui::AlignTextToFramePadding();
-        if (p.missing && !p.playing)
+        if (p.away)
+            ImGui::TextColored(Gold, "reconnecting");
+        else if (p.missing && !p.playing)
             ImGui::TextColored(Bad, "no song");
         else if (p.playing)
             ImGui::TextColored(Accent, "playing");
@@ -748,6 +750,8 @@ void DrawLobby(bool* open)
             if (ImGui::SmallButton("Disconnect"))
                 mp::Disconnect();
         }
+        if (s.reconnecting)
+            ImGui::TextColored(Gold, "Connection lost, reconnecting...");
         ImGui::Separator();
         DrawPlayers(s);
         ImGui::Separator();
@@ -863,7 +867,7 @@ static void DrawWaitingBanner(const mp::State& s)
         ImGui::TextColored(Accent, "Waiting for players...  %d / %d loaded", loaded, total);
         for (const mp::Player& p : s.players)
             if (p.playing && !p.loaded)
-                ImGui::TextColored(Dim, "  %s", p.name.c_str());
+                ImGui::TextColored(Dim, p.away ? "  %s (reconnecting)" : "  %s", p.name.c_str());
     }
     ImGui::End();
 }
